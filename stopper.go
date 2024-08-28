@@ -124,6 +124,27 @@ func WithContext(ctx context.Context) *Context {
 	return s
 }
 
+// Call executes the given function within the current goroutine and
+// monitors its lifecycle. That is, both Call and Wait will block until
+// the function has returned.
+//
+// Call returns any error from the function with no other side effects.
+// Unlike the Go method, Call does not stop the Context if the function
+// returns an error. If the Context has already been stopped,
+// [ErrStopped] will be returned.
+//
+// The function passed to Call should prefer the [Context.Stopping]
+// channel to return instead of depending on [Context.Done]. This allows
+// a soft-stop, rather than waiting for the grace period to expire when
+// [Context.Stop] is called.
+func (c *Context) Call(fn func(ctx *Context) error) error {
+	if !c.apply(1) {
+		return ErrStopped
+	}
+	defer c.apply(-1)
+	return fn(c)
+}
+
 // Deadline implements [context.Context].
 func (c *Context) Deadline() (deadline time.Time, ok bool) { return c.delegate.Deadline() }
 
@@ -162,6 +183,14 @@ func (c *Context) Done() <-chan struct{} { return c.delegate.Done() }
 // [context.ErrCanceled], [context.Cause] will return [ErrStopped] if
 // the context cancellation resulted from a call to Stop.
 func (c *Context) Err() error { return c.delegate.Err() }
+
+// Len returns the number of tasks being tracked by the Context. This
+// includes tasks started by derived Contexts.
+func (c *Context) Len() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.mu.count
+}
 
 // Go spawns a new goroutine to execute the given function and monitors
 // its lifecycle.

@@ -64,6 +64,28 @@ func TestCancelOuter(t *testing.T) {
 	a.Nil(s.Wait())
 }
 
+func TestCall(t *testing.T) {
+	a := assert.New(t)
+
+	s := WithContext(context.Background())
+
+	// Verify that returning an error from the callback does not stop
+	// the Context.
+	err := errors.New("BOOM")
+	a.ErrorIs(s.Call(func(ctx *Context) error {
+		// The call should increment the wait value.
+		a.Equal(1, s.Len())
+		return err
+	}), err)
+
+	a.False(s.IsStopping())
+
+	s.Stop(0)
+	a.ErrorIs(
+		s.Call(func(ctx *Context) error { return nil }),
+		ErrStopped)
+}
+
 func TestCallbackErrorStops(t *testing.T) {
 	a := assert.New(t)
 
@@ -81,9 +103,15 @@ func TestChainStopper(t *testing.T) {
 	mid := context.WithValue(parent, parent, parent) // Demonstrate unwrapping.
 	child := WithContext(mid)
 	a.Same(parent, child.parent)
+	a.Zero(parent.Len())
+	a.Zero(child.Len())
 
 	waitFor := make(chan struct{})
 	child.Go(func(*Context) error { <-waitFor; return nil })
+
+	// Task tracking chains.
+	a.Equal(1, parent.Len())
+	a.Equal(1, child.Len())
 
 	// Verify that stopping the parent propagates to the child.
 	parent.Stop(0)
@@ -97,6 +125,10 @@ func TestChainStopper(t *testing.T) {
 	// However, the contexts should not cancel until the work is done.
 	a.Nil(parent.Err())
 	a.Nil(child.Err())
+
+	// There are still pending tasks.
+	a.Equal(1, parent.Len())
+	a.Equal(1, child.Len())
 
 	// Allow the work to finish, and verify cancellation.
 	close(waitFor)
@@ -132,6 +164,9 @@ func TestChainStopper(t *testing.T) {
 	a.ErrorIs(parent.Err(), context.Canceled)
 	a.ErrorIs(context.Cause(parent), ErrStopped)
 	a.Nil(child.Wait())
+
+	a.Zero(parent.Len())
+	a.Zero(child.Len())
 }
 
 func TestDefer(t *testing.T) {
