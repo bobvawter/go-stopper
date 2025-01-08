@@ -1,0 +1,29 @@
+name: Golang
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+on:
+  merge_group:
+  pull_request:
+  push:
+    branches: [ main, dev ]
+    tags: [ 'v*.*.*' ]
+jobs:
+  test:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Preflight script
+        run: $GITHUB_WORKSPACE/preflight.sh
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}

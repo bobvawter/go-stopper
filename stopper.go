@@ -1,21 +1,9 @@
 // Copyright 2023 The Cockroach Authors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
+// Copyright 2025 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
-// Package stopper contains a utility class for gracefully terminating
-// long-running processes.
+// Package stopper contains a utility for gracefully terminating
+// long-running tasks within a Go program.
 package stopper
 
 import (
@@ -275,7 +263,7 @@ func (c *Context) Stop(gracePeriod time.Duration) {
 }
 
 // Stopping returns a channel that is closed when a graceful shutdown
-// has been requested or when the parent context has been canceled.
+// has been requested or when a parent context has been stopped.
 func (c *Context) Stopping() <-chan struct{} {
 	return c.stopping
 }
