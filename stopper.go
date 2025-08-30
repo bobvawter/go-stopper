@@ -19,7 +19,9 @@ type contextKey struct{}
 // background is a Context that never stops.
 var background = &Context{
 	delegate: context.Background(),
-	stopping: make(chan struct{}),
+	state: &state{
+		stopping: make(chan struct{}),
+	},
 }
 
 // ErrStopped will be returned from [context.Cause] when the Context has
@@ -41,8 +43,13 @@ var ErrGracePeriodExpired = errors.New("grace period expired")
 // function can be used to retrieve a Context from any
 // [context.Context].
 type Context struct {
-	cancel   func(error) // Invoked via cancelLocked.
+	*state
 	delegate context.Context
+}
+
+// A state may be shared between multiple Context instances.
+type state struct {
+	cancel   func(error) // Invoked via cancelLocked.
 	stopping chan struct{}
 	parent   *Context
 
@@ -94,10 +101,12 @@ func WithContext(ctx context.Context) *Context {
 
 	ctx, cancel := context.WithCancelCause(ctx)
 	s := &Context{
-		cancel:   cancel,
+		state: &state{
+			cancel:   cancel,
+			parent:   parent,
+			stopping: make(chan struct{}),
+		},
 		delegate: ctx,
-		parent:   parent,
-		stopping: make(chan struct{}),
 	}
 
 	// Propagate a parent stop or context cancellation into a Stop call
@@ -290,6 +299,20 @@ func (c *Context) Wait() error {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.mu.err
+}
+
+// With returns a Context that is otherwise equivalent to the receiver, save
+// that all [context.Context] behavior is delegated to the new context. This
+// enables interaction with the [runtime/trace] package or other libraries that
+// generate custom [context.Context] instances.
+//
+// Since the With method does not create a new, nested stopper hierarchy, it is
+// less expensive than calling [WithContext] in tracing scenarios.
+func (c *Context) With(ctx context.Context) *Context {
+	return &Context{
+		delegate: ctx,
+		state:    c.state,
+	}
 }
 
 // apply is used to maintain the count of started goroutines. It returns

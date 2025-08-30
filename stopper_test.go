@@ -268,3 +268,30 @@ func TestUnused(t *testing.T) {
 	a.ErrorIs(context.Cause(s), ErrStopped)
 	a.Nil(s.Wait())
 }
+
+func TestWith(t *testing.T) {
+	a := assert.New(t)
+
+	s := WithContext(context.Background())
+
+	type k string
+
+	c1 := context.WithValue(context.Background(), k("foo"), "bar")
+	c2 := context.WithValue(context.Background(), k("baz"), "quux")
+
+	s.With(c1).Go(func(ctx *Context) error {
+		a.NotSame(s, ctx)
+		a.Same(s.state, ctx.state)
+		a.Equal("bar", ctx.Value(k("foo")))
+		return nil
+	})
+	s.With(c2).Go(func(ctx *Context) error {
+		a.NotSame(s, ctx)
+		a.Same(s.state, ctx.state)
+		a.Equal("quux", ctx.Value(k("baz")))
+		return nil
+	})
+
+	s.Stop(time.Second)
+	a.NoError(s.Wait())
+}

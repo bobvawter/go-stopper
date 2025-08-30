@@ -12,6 +12,11 @@ A `stopper.Context` extends the stdlib `context.Context` API with a soft-stop si
 task-launching APIs similar to `sync.WaitGroup` or `sync.ErrGroup`. This API supports nested contexts
 for use-cases where tasks may be hierarchical in nature.
 
+Stopper also interoperates with `runtime/trace` or other modules that create custom
+`context.Context` instances:
+
+![A view of nested golang trace regions](./docs/trace.png)
+
 ## Project History
 
 This repository was extracted from `github.com/cockroachdb/field-eng-powertools` using the command
