@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/trace"
 	"time"
 
 	"vawter.tech/stopper"
@@ -171,4 +172,54 @@ func ExampleContext_nested() {
 	// middle 2
 	// inner 1
 	// outer 0
+}
+
+// This shows how the [runtime/trace] package, or any other package that creates
+// custom [context.Context] instances, can be interoperated with.
+func ExampleContext_With_tracing() {
+	f, err := os.OpenFile("trace.out", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		if err := f.Close(); err != nil {
+			panic(err)
+		}
+		fmt.Println("trace written to", f.Name())
+	}()
+
+	if err := trace.Start(f); err != nil {
+		panic(err)
+	}
+	defer trace.Stop()
+
+	rootCtx, rootTask := trace.NewTask(context.Background(), "root task")
+	defer rootTask.End()
+
+	ctx := stopper.WithContext(rootCtx)
+	defer trace.StartRegion(ctx, "root region").End()
+
+	midCtx, midTask := trace.NewTask(ctx, "mid task")
+	ctx.With(midCtx).Go(func(ctx *stopper.Context) error {
+		defer midTask.End()
+		defer trace.StartRegion(ctx, "mid region").End()
+		trace.Log(ctx, "message", "middle task is here")
+
+		innerCtx, innerTask := trace.NewTask(ctx, "inner task")
+		ctx.With(innerCtx).Go(func(ctx *stopper.Context) error {
+			defer innerTask.End()
+			defer trace.StartRegion(ctx, "inner region").End()
+			trace.Log(ctx, "message", "inner task is here")
+			ctx.Stop(time.Second)
+			return nil
+		})
+
+		return nil
+	})
+
+	if err := ctx.Wait(); err != nil {
+		panic(err)
+	}
+	// Output:
+	// trace written to trace.out
 }
