@@ -1,6 +1,7 @@
 # Golang Task Lifecycle Management
 
 [![Go Reference](https://pkg.go.dev/badge/vawter.tech/stopper.svg)](https://pkg.go.dev/vawter.tech/stopper)
+[![codecov](https://codecov.io/gh/bobvawter/go-stopper/graph/badge.svg?token=7XT22QWN4R)](https://codecov.io/gh/bobvawter/go-stopper)
 
 ```shell
 go get vawter.tech/stopper
