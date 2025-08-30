@@ -6,10 +6,64 @@ package stopper_test
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
 	"time"
 
 	"vawter.tech/stopper"
 )
+
+func Example_features() {
+	// Create a stopper context from an existing context.
+	ctx := stopper.WithContext(context.Background())
+
+	// Respond to signals.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+	stopper.StopOnReceive(ctx, time.Second, ch)
+
+	// Do work, often in a loop.
+	ctx.Go(func(ctx *stopper.Context) error {
+		for !ctx.IsStopping() {
+		}
+		return nil
+	})
+
+	// Plays nicely with channels.
+	ctx.Go(func(ctx *stopper.Context) error {
+		for {
+			select {
+			case <-ctx.Stopping():
+				return nil
+			case work := <-sourceOfWork:
+				// Launches additional workers.
+				ctx.Go(func(ctx *stopper.Context) error {
+					return process(ctx, work)
+				})
+			}
+		}
+	})
+
+	subCtx := stopper.WithContext(ctx) // Nested contexts can be created.
+	subCtx.Stop(time.Second)           // Won't affect the outer context.
+
+	// Blocks until all managed goroutines are done.
+	if err := ctx.Wait(); err != nil {
+		panic(err)
+	}
+}
+
+var sourceOfWork chan struct{}
+
+// The stopper.Context type fits into existing context plumbing and can be
+// retrieved later on.
+func process(ctxCtx context.Context, work struct{}) error {
+	stopperCtx := stopper.From(ctxCtx)
+	stopperCtx.Go(func(ctx *stopper.Context) error {
+		return nil
+	})
+	return nil
+}
 
 func ExampleContext_Defer() {
 	ctx := stopper.WithContext(context.Background())
