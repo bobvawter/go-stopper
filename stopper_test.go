@@ -19,6 +19,7 @@ func TestAmbient(t *testing.T) {
 
 	s := From(context.Background())
 	a.Same(s, background)
+	a.False(s.canStop())
 
 	a.False(IsStopping(context.Background()))
 	s.Go(func(*Context) error { return nil })
@@ -90,7 +91,7 @@ func TestChainStopper(t *testing.T) {
 	parent := WithContext(context.Background())
 	mid := context.WithValue(parent, parent, parent) // Demonstrate unwrapping.
 	child := WithContext(mid)
-	a.Same(parent, child.parent)
+	a.Same(parent.state, child.parent)
 	a.Zero(parent.Len())
 	a.Zero(child.Len())
 
@@ -157,6 +158,18 @@ func TestChainStopper(t *testing.T) {
 	a.Zero(child.Len())
 }
 
+func TestDeadline(t *testing.T) {
+	a := assert.New(t)
+
+	ctxCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+
+	s := WithContext(ctxCtx)
+
+	_, hasDeadline := s.Deadline()
+	a.True(hasDeadline)
+}
+
 func TestDefer(t *testing.T) {
 	a := assert.New(t)
 
@@ -204,10 +217,33 @@ func TestGracePeriod(t *testing.T) {
 	a.ErrorIs(context.Cause(s), ErrGracePeriodExpired)
 }
 
+func TestOverRelease(t *testing.T) {
+	a := assert.New(t)
+
+	s := WithContext(context.Background())
+	a.PanicsWithValue("over-released", func() {
+		s.apply(-1)
+	})
+}
+
+func TestParentAlreadyStopping(t *testing.T) {
+	a := assert.New(t)
+
+	parent := WithContext(context.Background())
+	child := WithContext(parent)
+
+	parent.mu.Lock()
+	parent.mu.stopping = true
+	parent.mu.Unlock()
+
+	a.False(child.Go(func(*Context) error { return nil }))
+}
+
 func TestStopper(t *testing.T) {
 	a := assert.New(t)
 
 	s := WithContext(context.Background())
+	a.True(s.canStop())
 	a.Same(s, From(s))                          // Direct cast
 	a.Same(s, From(context.WithValue(s, s, s))) // Unwrapping
 	select {
@@ -294,4 +330,32 @@ func TestWith(t *testing.T) {
 
 	s.Stop(time.Second)
 	a.NoError(s.Wait())
+}
+
+func TestWithBackground(t *testing.T) {
+	a := assert.New(t)
+
+	bg := Background()
+	ch := make(chan *Context, 1)
+
+	type k string
+	w := bg.With(context.WithValue(bg, k("foo"), "bar"))
+	a.NotSame(bg, w)
+	a.False(w.canStop())
+	a.Equal("bar", w.Value(k("foo")))
+	a.PanicsWithError("cannot call Context.Defer() on a background context", func() {
+		w.Defer(func() {})
+	})
+	w.Go(func(ctx *Context) error {
+		ch <- ctx
+		return errors.New("no effect")
+	})
+
+	select {
+	case <-time.After(30 * time.Second):
+		a.Fail("timeout")
+	case found := <-ch:
+		a.NotSame(Background(), found)
+		a.False(found.canStop())
+	}
 }
