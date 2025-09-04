@@ -16,12 +16,16 @@ import (
 // contextKey is a [context.Context.Value] key.
 type contextKey struct{}
 
-// background is a Context that never stops.
+// unstoppable is a sentinel state instance shared by the background Context and
+// any derived siblings.
+var unstoppable = &state{
+	stopping: make(chan struct{}),
+}
+
+// background is returned by [Background].
 var background = &Context{
 	delegate: context.Background(),
-	state: &state{
-		stopping: make(chan struct{}),
-	},
+	state:    unstoppable,
 }
 
 // ErrStopped will be returned from [context.Cause] when the Context has
@@ -157,7 +161,7 @@ func (c *Context) Deadline() (deadline time.Time, ok bool) { return c.delegate.D
 // Calling this method on the Background context will panic, since that
 // context can never be cancelled.
 func (c *Context) Defer(fn func()) {
-	if c == background {
+	if !c.canStop() {
 		panic(errors.New("cannot call Context.Defer() on a background context"))
 	}
 	c.mu.Lock()
@@ -212,6 +216,9 @@ func (c *Context) Go(fn func(ctx *Context) error) (accepted bool) {
 		defer c.apply(-1)
 		if err := fn(c); err != nil {
 			c.Stop(0)
+			if !c.canStop() {
+				return
+			}
 			c.mu.Lock()
 			defer c.mu.Unlock()
 			if c.mu.err == nil {
@@ -237,7 +244,7 @@ func (c *Context) IsStopping() bool {
 // context will be forcefully cancelled if the goroutines have not
 // exited within the given timeframe.
 func (c *Context) Stop(gracePeriod time.Duration) {
-	if c == background {
+	if !c.canStop() {
 		return
 	}
 	c.mu.Lock()
@@ -291,7 +298,7 @@ func (c *Context) Value(key any) any {
 // passed to Go. If Wait is called on the [Background] instance, it will
 // immediately return nil.
 func (c *Context) Wait() error {
-	if c == background {
+	if !c.canStop() {
 		return nil
 	}
 	<-c.Done()
@@ -318,7 +325,7 @@ func (c *Context) With(ctx context.Context) *Context {
 // apply is used to maintain the count of started goroutines. It returns
 // true if the delta was applied.
 func (s *state) apply(delta int) bool {
-	if s == background.state {
+	if !s.canStop() {
 		return true
 	}
 
@@ -357,4 +364,8 @@ func (s *state) cancelLocked(err error) {
 		s.mu.deferred[i]()
 	}
 	s.mu.deferred = nil
+}
+
+func (s *state) canStop() bool {
+	return s != unstoppable
 }

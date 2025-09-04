@@ -19,6 +19,7 @@ func TestAmbient(t *testing.T) {
 
 	s := From(context.Background())
 	a.Same(s, background)
+	a.False(s.canStop())
 
 	a.False(IsStopping(context.Background()))
 	s.Go(func(*Context) error { return nil })
@@ -208,6 +209,7 @@ func TestStopper(t *testing.T) {
 	a := assert.New(t)
 
 	s := WithContext(context.Background())
+	a.True(s.canStop())
 	a.Same(s, From(s))                          // Direct cast
 	a.Same(s, From(context.WithValue(s, s, s))) // Unwrapping
 	select {
@@ -294,4 +296,32 @@ func TestWith(t *testing.T) {
 
 	s.Stop(time.Second)
 	a.NoError(s.Wait())
+}
+
+func TestWithBackground(t *testing.T) {
+	a := assert.New(t)
+
+	bg := Background()
+	ch := make(chan *Context, 1)
+
+	type k string
+	w := bg.With(context.WithValue(bg, k("foo"), "bar"))
+	a.NotSame(bg, w)
+	a.False(w.canStop())
+	a.Equal("bar", w.Value(k("foo")))
+	a.PanicsWithError("cannot call Context.Defer() on a background context", func() {
+		w.Defer(func() {})
+	})
+	w.Go(func(ctx *Context) error {
+		ch <- ctx
+		return errors.New("no effect")
+	})
+
+	select {
+	case <-time.After(30 * time.Second):
+		a.Fail("timeout")
+	case found := <-ch:
+		a.NotSame(Background(), found)
+		a.False(found.canStop())
+	}
 }
