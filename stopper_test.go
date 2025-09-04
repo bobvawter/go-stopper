@@ -205,6 +205,15 @@ func TestGracePeriod(t *testing.T) {
 	a.ErrorIs(context.Cause(s), ErrGracePeriodExpired)
 }
 
+func TestOverRelease(t *testing.T) {
+	a := assert.New(t)
+
+	s := WithContext(context.Background())
+	a.PanicsWithValue("over-released", func() {
+		s.apply(-1)
+	})
+}
+
 func TestStopper(t *testing.T) {
 	a := assert.New(t)
 
