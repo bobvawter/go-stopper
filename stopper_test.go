@@ -226,6 +226,19 @@ func TestOverRelease(t *testing.T) {
 	})
 }
 
+func TestParentAlreadyStopping(t *testing.T) {
+	a := assert.New(t)
+
+	parent := WithContext(context.Background())
+	child := WithContext(parent)
+
+	parent.mu.Lock()
+	parent.mu.stopping = true
+	parent.mu.Unlock()
+
+	a.False(child.Go(func(*Context) error { return nil }))
+}
+
 func TestStopper(t *testing.T) {
 	a := assert.New(t)
 
