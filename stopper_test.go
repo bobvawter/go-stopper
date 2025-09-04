@@ -90,7 +90,7 @@ func TestChainStopper(t *testing.T) {
 	parent := WithContext(context.Background())
 	mid := context.WithValue(parent, parent, parent) // Demonstrate unwrapping.
 	child := WithContext(mid)
-	a.Same(parent, child.parent)
+	a.Same(parent.state, child.parent)
 	a.Zero(parent.Len())
 	a.Zero(child.Len())
 

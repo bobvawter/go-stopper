@@ -51,7 +51,7 @@ type Context struct {
 type state struct {
 	cancel   func(error) // Invoked via cancelLocked.
 	stopping chan struct{}
-	parent   *Context
+	parent   *state
 
 	mu struct {
 		sync.RWMutex
@@ -103,7 +103,7 @@ func WithContext(ctx context.Context) *Context {
 	s := &Context{
 		state: &state{
 			cancel:   cancel,
-			parent:   parent,
+			parent:   parent.state,
 			stopping: make(chan struct{}),
 		},
 		delegate: ctx,
@@ -317,16 +317,16 @@ func (c *Context) With(ctx context.Context) *Context {
 
 // apply is used to maintain the count of started goroutines. It returns
 // true if the delta was applied.
-func (c *Context) apply(delta int) bool {
-	if c == background {
+func (s *state) apply(delta int) bool {
+	if s == background.state {
 		return true
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	// Don't allow new goroutines to be added when stopping.
-	if c.mu.stopping && delta >= 0 {
+	if s.mu.stopping && delta >= 0 {
 		return false
 	}
 
@@ -334,27 +334,27 @@ func (c *Context) apply(delta int) bool {
 	// context to prevent premature cancellation. Verify that the parent
 	// accepted the delta in case it was just stopped, but our helper
 	// goroutine hasn't yet called Stop on this instance.
-	if !c.parent.apply(delta) {
+	if !s.parent.apply(delta) {
 		return false
 	}
 
-	c.mu.count += delta
-	if c.mu.count < 0 {
+	s.mu.count += delta
+	if s.mu.count < 0 {
 		// Implementation error, not user problem.
 		panic("over-released")
 	}
-	if c.mu.count == 0 && c.mu.stopping {
-		c.cancelLocked(ErrStopped)
+	if s.mu.count == 0 && s.mu.stopping {
+		s.cancelLocked(ErrStopped)
 	}
 	return true
 }
 
 // cancelLocked invokes the context-cancellation function and then
 // executes any deferred callbacks.
-func (c *Context) cancelLocked(err error) {
-	c.cancel(err)
-	for i := len(c.mu.deferred) - 1; i >= 0; i-- {
-		c.mu.deferred[i]()
+func (s *state) cancelLocked(err error) {
+	s.cancel(err)
+	for i := len(s.mu.deferred) - 1; i >= 0; i-- {
+		s.mu.deferred[i]()
 	}
-	c.mu.deferred = nil
+	s.mu.deferred = nil
 }
