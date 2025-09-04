@@ -158,6 +158,18 @@ func TestChainStopper(t *testing.T) {
 	a.Zero(child.Len())
 }
 
+func TestDeadline(t *testing.T) {
+	a := assert.New(t)
+
+	ctxCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	defer cancel()
+
+	s := WithContext(ctxCtx)
+
+	_, hasDeadline := s.Deadline()
+	a.True(hasDeadline)
+}
+
 func TestDefer(t *testing.T) {
 	a := assert.New(t)
 
