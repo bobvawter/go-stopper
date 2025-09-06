@@ -214,17 +214,23 @@ func (c *Context) Go(fn func(ctx *Context) error) (accepted bool) {
 
 	go func() {
 		defer c.apply(-1)
-		if err := fn(c); err != nil {
-			c.Stop(0)
-			if !c.canStop() {
-				return
-			}
-			c.mu.Lock()
-			defer c.mu.Unlock()
-			if c.mu.err == nil {
-				c.mu.err = err
-			}
+		err := fn(c)
+		// Success.
+		if err == nil {
+			return
 		}
+		// Background context.
+		if !c.canStop() {
+			return
+		}
+		// Set the error to be returned by Wait().
+		c.mu.Lock()
+		if c.mu.err == nil {
+			c.mu.err = err
+		}
+		c.mu.Unlock()
+		// Mark the context as stopping.
+		c.Stop(0)
 	}()
 	return true
 }

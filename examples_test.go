@@ -4,11 +4,19 @@
 package stopper_test
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/signal"
 	"runtime/trace"
+	"strings"
 	"time"
 
 	"vawter.tech/stopper"
@@ -58,12 +66,143 @@ var sourceOfWork chan struct{}
 
 // The stopper.Context type fits into existing context plumbing and can be
 // retrieved later on.
-func process(ctxCtx context.Context, work struct{}) error {
+func process[T any](ctxCtx context.Context, work T) error {
 	stopperCtx := stopper.From(ctxCtx)
 	stopperCtx.Go(func(ctx *stopper.Context) error {
 		return nil
 	})
 	return nil
+}
+
+// A pattern for using a stopper with an accept/poll type of network listening
+// API.
+func Example_netServer() {
+	ctx := stopper.WithContext(context.Background())
+
+	// Respond to interrupts with a 30-second grace period.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+	stopper.StopOnReceive(ctx, 30*time.Second, ch)
+
+	// Open a network listener.
+	const addr = "127.0.0.1:13013"
+	l, err := net.Listen("tcp", addr)
+	if err != nil {
+		panic(err)
+	}
+	// Close the listener when the context stops.
+	ctx.Go(func(ctx *stopper.Context) error {
+		<-ctx.Stopping()
+		return l.Close()
+	})
+	// Accept connections.
+	ctx.Go(func(ctx *stopper.Context) error {
+		for {
+			conn, err := l.Accept()
+			// This returns an error when the listener has been closed.
+			if err != nil {
+				return nil
+			}
+			// Handle the connection in its own goroutine.
+			ctx.Go(func(ctx *stopper.Context) error {
+				defer func() { _ = conn.Close() }()
+
+				s := bufio.NewScanner(conn)
+				s.Scan()
+				fmt.Println(s.Text())
+
+				// Simulate an OS signal to stop the app.
+				ch <- os.Interrupt
+
+				return nil
+			})
+		}
+	})
+	// A task to send a message.
+	ctx.Go(func(ctx *stopper.Context) error {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			panic(err)
+		}
+		_, _ = conn.Write([]byte("Hello World!\n"))
+		if err := conn.Close(); err != nil {
+			slog.ErrorContext(ctx, "could not send data", "error", err)
+		}
+		return nil
+	})
+	// Block until tasks are complete.
+	if err := ctx.Wait(); err != nil {
+		slog.ErrorContext(ctx, "internal task error", "error", err)
+	}
+	// Output:
+	// Hello World!
+}
+
+// An example showing the use of [stopper.Context.Call] when a goroutine is
+// already allocated by some other API. In this case, the HTTP server creates a
+// goroutine per request, but we still want to be able to interact with a
+// stopper hierarchy.
+func ExampleContext_Call_httpServer() {
+	ctx := stopper.WithContext(context.Background())
+
+	// Respond to interrupts with a 30-second grace period.
+	ch := make(chan os.Signal, 1)
+	signal.Notify(ch, os.Interrupt)
+	stopper.StopOnReceive(ctx, 30*time.Second, ch)
+
+	// The HTTP server creates goroutines for us and has its own expectations
+	// around goroutine/request lifecycles.
+	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// We use With() here so that a caller hangup can immediately stop any
+		// work. This is optional, and might not be desirable in all
+		// circumstances.
+		err := ctx.With(r.Context()).Call(func(ctx *stopper.Context) error {
+			data, err := io.ReadAll(r.Body)
+			if err != nil {
+				return err
+			}
+			fmt.Println(string(data))
+			w.WriteHeader(http.StatusAccepted)
+			return nil
+		})
+
+		if err == nil {
+			return
+		}
+
+		// If Stop() has been called, Call() will immediately return ErrStopped.
+		// We can respond to the client (or load-balancer) saying that this
+		// instance of the server cannot fulfill the request.
+		if errors.Is(err, stopper.ErrStopped) {
+			w.Header().Add("Retry-After", "0")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+
+		slog.ErrorContext(ctx, "handler error", "error", err)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	// A task to make an HTTP request.
+	ctx.Go(func(ctx *stopper.Context) error {
+		_, err := svr.Client().Post(svr.URL, "text/plain", strings.NewReader("Hello World!"))
+		if err != nil {
+			// Returning an error here will make the call to Wait() below fail
+			// out. This makes sense for an example, but production code should
+			// handle the error in a reasonable way and return nil.
+			return err
+		}
+
+		// Simulate an OS shutdown.
+		ch <- os.Interrupt
+		return nil
+	})
+
+	if err := ctx.Wait(); err != nil {
+		slog.ErrorContext(ctx, "internal task error", "error", err)
+	}
+	// Output:
+	// Hello World!
 }
 
 func ExampleContext_Defer() {
