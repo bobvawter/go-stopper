@@ -17,7 +17,7 @@ nested contexts for use-cases where tasks may be hierarchical in nature.
 ## API Use
 
 There are a number of
-[exampless](https://pkg.go.dev/vawter.tech/stopper#pkg-examples) in the package
+[examples](https://pkg.go.dev/vawter.tech/stopper#pkg-examples) in the package
 docs showing a variety of usecase patterns for polling and callback-style network servers.
 
 ## Tracing
