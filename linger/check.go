@@ -15,7 +15,11 @@ func CheckClean(t TestingT, r *Recorder) {
 	if len(callers) == 0 {
 		return
 	}
-	t.Helper()
+
+	// Improve error messages if we're being called from a real test.
+	if x, ok := t.(interface{ Helper() }); ok {
+		x.Helper()
+	}
 
 	t.Errorf("lingering tasks detected")
 	for _, stack := range callers {
@@ -33,6 +37,5 @@ func CheckClean(t TestingT, r *Recorder) {
 
 // TestingT is the subset of [testing.TB] needed by [CheckClean].
 type TestingT interface {
-	Helper()
 	Errorf(string, ...any)
 }
