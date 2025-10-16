@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -358,4 +359,24 @@ func TestWithBackground(t *testing.T) {
 		a.NotSame(Background(), found)
 		a.False(found.canStop())
 	}
+}
+
+func TestWithInvoker(t *testing.T) {
+	r := assert.New(t)
+
+	var called atomic.Bool
+	ctx := WithInvoker(context.Background(), func(fn Func) Func {
+		return func(ctx *Context) error {
+			called.Store(true)
+			return fn(ctx)
+		}
+	})
+	r.NoError(ctx.Call(func(ctx *Context) error { return nil }))
+	r.True(called.Load())
+
+	called.Store(false)
+	ctx.Go(func(ctx *Context) error { return nil })
+	ctx.Stop(30 * time.Second)
+	r.NoError(ctx.Wait())
+	r.True(called.Load())
 }

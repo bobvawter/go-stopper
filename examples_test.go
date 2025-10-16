@@ -15,11 +15,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/trace"
 	"strings"
 	"time"
 
 	"vawter.tech/stopper"
+	"vawter.tech/stopper/linger"
 )
 
 func Example_features() {
@@ -361,4 +363,87 @@ func ExampleContext_With_tracing() {
 	}
 	// Output:
 	// trace written to trace.out
+}
+
+// This shows the sequence of callbacks when nested contexts have stoppers
+// defined. Note that the setup phase is bottom-up, while execution is top-down.
+func ExampleWithInvoker_observeLifecycle() {
+	outer := stopper.WithInvoker(context.Background(),
+		func(fn stopper.Func) stopper.Func {
+			fmt.Println("outer setting up")
+			return func(ctx *stopper.Context) error {
+				fmt.Println("outer start")
+				defer fmt.Println("outer end")
+				return fn(ctx)
+			}
+		})
+	middle := stopper.WithInvoker(outer,
+		func(fn stopper.Func) stopper.Func {
+			fmt.Println("middle setting up")
+			return func(ctx *stopper.Context) error {
+				fmt.Println("middle start")
+				defer fmt.Println("middle end")
+				return fn(ctx)
+			}
+		})
+	inner := stopper.WithContext(middle)
+	inner.Go(func(ctx *stopper.Context) error {
+		fmt.Println("here")
+		return nil
+	})
+	outer.Stop(time.Second)
+	if err := outer.Wait(); err != nil {
+		panic(err)
+	}
+	// Output:
+	// middle setting up
+	// outer setting up
+	// outer start
+	// middle start
+	// here
+	// middle end
+	// outer end
+}
+
+// This shows how a [linger.Recorder] may be used to report on where any
+// lingering tasks were originally started. See also [linger.Check].
+func ExampleWithInvoker_verifyNoLingeringTasks() {
+	const grace = time.Nanosecond
+
+	// Record just the line at which Call() or Go() were called.
+	rec := linger.NewRecorder(1)
+	// Construct the stopper with the recorder.
+	ctx := stopper.WithInvoker(context.Background(), rec.Invoke)
+	// This task will linger beyond the grace period because it doesn't
+	// select on the Stopping() channel.
+	ctx.Go(func(ctx *stopper.Context) error {
+		time.Sleep(time.Second)
+		return nil
+	})
+	// Begin shutdown.
+	ctx.Stop(grace)
+	select {
+	case <-ctx.Done():
+		// The Done() channel is closed when all work is complete.
+		fmt.Println("no lingering tasks")
+	case <-time.After(grace):
+		for _, stack := range rec.Callers() {
+			fmt.Println("lingering task(s) started at:")
+			frames := runtime.CallersFrames(stack)
+			for {
+				frame, more := frames.Next()
+				// The frame.File and frame.Line fields would normally be
+				// printed, but that doesn't play nicely with CI, since the
+				// local file paths will change.
+				fmt.Printf("  %s\n", frame.Function)
+				if !more {
+					break
+				}
+			}
+		}
+	}
+
+	// Output:
+	// lingering task(s) started at:
+	//   vawter.tech/stopper_test.ExampleWithInvoker_verifyNoLingeringTasks
 }
