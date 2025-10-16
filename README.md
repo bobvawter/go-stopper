@@ -14,11 +14,12 @@ API with a soft-stop signal and includes task-launching APIs similar to
 [`ErrGroup`](https://pkg.go.dev/golang.org/x/sync/errgroup).
 
 Supported use-cases:
-* [X] [`accept / poll` type APIs](https://pkg.go.dev/vawter.tech/stopper#example-package-NetServer)
-* [X] [Adopting already-spawned goroutines](https://pkg.go.dev/vawter.tech/stopper#example-Context.Call-HttpServer)
-* [X] [Channel-based notifications](https://pkg.go.dev/vawter.tech/stopper#example-Context-Ticker)
-* [X] [Deferred cleanups](https://pkg.go.dev/vawter.tech/stopper#example-Context.Defer)
-* [X] [Nested task groups](https://pkg.go.dev/vawter.tech/stopper#example-Context-Nested)
+* [X] [`accept / poll` type APIs](https://pkg.go.dev/vawter.tech/stopper@main#example-package-NetServer)
+* [X] [Adopting already-spawned goroutines](https://pkg.go.dev/vawter.tech/stopper@main#example-Context.Call-HttpServer)
+* [X] [Channel-based notifications](https://pkg.go.dev/vawter.tech/stopper@main#example-Context-Ticker)
+* [X] [Deferred cleanups](https://pkg.go.dev/vawter.tech/stopper@main#example-Context.Defer)
+* [X] [Detect lingering tasks](https://pkg.go.dev/vawter.tech/stopper@main#example-package-Testing)
+* [X] [Nested task groups](https://pkg.go.dev/vawter.tech/stopper@main#example-Context-Nested)
 * [X] [`runtime/trace` or other Context-creating modules](https://pkg.go.dev/vawter.tech/stopper#example-Context.With-Tracing)
 
 ## API Use

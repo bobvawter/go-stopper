@@ -43,9 +43,9 @@ type fakeTB struct {
 	t      *testing.T
 }
 
-func (f *fakeTB) Helper() {}
 func (f *fakeTB) Errorf(s string, a ...any) {
 	f.failed = true
 	f.msgs = append(f.msgs, fmt.Sprintf(s, a...))
 	f.t.Logf(s, a...)
 }
+func (f *fakeTB) Helper() {}
