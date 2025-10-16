@@ -54,8 +54,9 @@ type Context struct {
 // A state may be shared between multiple Context instances.
 type state struct {
 	cancel   func(error) // Invoked via cancelLocked.
-	stopping chan struct{}
+	invoker  Invoker
 	parent   *state
+	stopping chan struct{}
 
 	mu struct {
 		sync.RWMutex
@@ -107,6 +108,7 @@ func WithContext(ctx context.Context) *Context {
 	s := &Context{
 		state: &state{
 			cancel:   cancel,
+			invoker:  parent.invoker,
 			parent:   parent.state,
 			stopping: make(chan struct{}),
 		},
@@ -123,6 +125,30 @@ func WithContext(ctx context.Context) *Context {
 		s.Stop(0)
 	}()
 	return s
+}
+
+// Func is a convenience type alias for the signature of functions invoked by a
+// [Context].
+type Func = func(*Context) error
+
+// An Invoker arranges to call the provided Func. See [WithInvoker] for
+// additional details.
+type Invoker func(fn Func) Func
+
+// WithInvoker is equivalent to [WithContext], except that the given [Invoker]
+// will be used to execute the functions passed to [Context.Call] and
+// [Context.Go]. The Invoker of a newly-defined context will be composed with
+// the Invoker defined in a parent context, if any.
+func WithInvoker(ctx context.Context, i Invoker) *Context {
+	ret := WithContext(ctx)
+	if outer := ret.invoker; outer == nil {
+		ret.invoker = i
+	} else {
+		ret.invoker = func(fn Func) Func {
+			return outer(i(fn))
+		}
+	}
+	return ret
 }
 
 // Call executes the given function within the current goroutine and
@@ -143,6 +169,9 @@ func (c *Context) Call(fn func(ctx *Context) error) error {
 		return ErrStopped
 	}
 	defer c.apply(-1)
+	if c.invoker != nil {
+		fn = c.invoker(fn)
+	}
 	return fn(c)
 }
 
@@ -210,6 +239,9 @@ func (c *Context) Len() int {
 func (c *Context) Go(fn func(ctx *Context) error) (accepted bool) {
 	if !c.apply(1) {
 		return false
+	}
+	if c.invoker != nil {
+		fn = c.invoker(fn)
 	}
 
 	go func() {
