@@ -15,13 +15,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/signal"
-	"runtime"
 	"runtime/trace"
 	"strings"
 	"time"
 
 	"vawter.tech/stopper"
-	"vawter.tech/stopper/linger"
 )
 
 func Example_features() {
@@ -365,7 +363,7 @@ func ExampleContext_With_tracing() {
 	// trace written to trace.out
 }
 
-// This shows the sequence of callbacks when nested contexts have stoppers
+// This shows the sequence of callbacks when nested contexts have Invokers
 // defined. Note that the setup phase is bottom-up, while execution is top-down.
 func ExampleWithInvoker_observeLifecycle() {
 	outer := stopper.WithInvoker(context.Background(),
@@ -403,47 +401,4 @@ func ExampleWithInvoker_observeLifecycle() {
 	// here
 	// middle end
 	// outer end
-}
-
-// This shows how a [linger.Recorder] may be used to report on where any
-// lingering tasks were originally started. See also [linger.Check].
-func ExampleWithInvoker_verifyNoLingeringTasks() {
-	const grace = time.Nanosecond
-
-	// Record just the line at which Call() or Go() were called.
-	rec := linger.NewRecorder(1)
-	// Construct the stopper with the recorder.
-	ctx := stopper.WithInvoker(context.Background(), rec.Invoke)
-	// This task will linger beyond the grace period because it doesn't
-	// select on the Stopping() channel.
-	ctx.Go(func(ctx *stopper.Context) error {
-		time.Sleep(time.Second)
-		return nil
-	})
-	// Begin shutdown.
-	ctx.Stop(grace)
-	select {
-	case <-ctx.Done():
-		// The Done() channel is closed when all work is complete.
-		fmt.Println("no lingering tasks")
-	case <-time.After(grace):
-		for _, stack := range rec.Callers() {
-			fmt.Println("lingering task(s) started at:")
-			frames := runtime.CallersFrames(stack)
-			for {
-				frame, more := frames.Next()
-				// The frame.File and frame.Line fields would normally be
-				// printed, but that doesn't play nicely with CI, since the
-				// local file paths will change.
-				fmt.Printf("  %s\n", frame.Function)
-				if !more {
-					break
-				}
-			}
-		}
-	}
-
-	// Output:
-	// lingering task(s) started at:
-	//   vawter.tech/stopper_test.ExampleWithInvoker_verifyNoLingeringTasks
 }

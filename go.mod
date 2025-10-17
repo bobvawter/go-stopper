@@ -1,6 +1,8 @@
 module vawter.tech/stopper
 
+// Update preflight.sh if expanding versions
 go 1.23
+toolchain go1.25.3
 
 require github.com/stretchr/testify v1.10.0
 
