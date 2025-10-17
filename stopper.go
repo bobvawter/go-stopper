@@ -54,7 +54,7 @@ type Context struct {
 // A state may be shared between multiple Context instances.
 type state struct {
 	cancel   func(error) // Invoked via cancelLocked.
-	invoker  Invoker
+	invokers []Invoker
 	parent   *state
 	stopping chan struct{}
 
@@ -108,7 +108,7 @@ func WithContext(ctx context.Context) *Context {
 	s := &Context{
 		state: &state{
 			cancel:   cancel,
-			invoker:  parent.invoker,
+			invokers: parent.invokers,
 			parent:   parent.state,
 			stopping: make(chan struct{}),
 		},
@@ -141,13 +141,10 @@ type Invoker func(fn Func) Func
 // the Invoker defined in a parent context, if any.
 func WithInvoker(ctx context.Context, i Invoker) *Context {
 	ret := WithContext(ctx)
-	if outer := ret.invoker; outer == nil {
-		ret.invoker = i
-	} else {
-		ret.invoker = func(fn Func) Func {
-			return outer(i(fn))
-		}
-	}
+	// Don't mutate original backing slice
+	next := make([]Invoker, len(ret.invokers), len(ret.invokers)+1)
+	copy(next, ret.invokers)
+	ret.invokers = append(next, i)
 	return ret
 }
 
@@ -169,8 +166,8 @@ func (c *Context) Call(fn func(ctx *Context) error) error {
 		return ErrStopped
 	}
 	defer c.apply(-1)
-	if c.invoker != nil {
-		fn = c.invoker(fn)
+	for i := len(c.invokers) - 1; i >= 0; i-- {
+		fn = c.invokers[i](fn)
 	}
 	return fn(c)
 }
@@ -240,8 +237,8 @@ func (c *Context) Go(fn func(ctx *Context) error) (accepted bool) {
 	if !c.apply(1) {
 		return false
 	}
-	if c.invoker != nil {
-		fn = c.invoker(fn)
+	for i := len(c.invokers) - 1; i >= 0; i-- {
+		fn = c.invokers[i](fn)
 	}
 
 	go func() {
