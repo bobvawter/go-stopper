@@ -290,6 +290,44 @@ func TestStopper(t *testing.T) {
 	a.Nil(s.Wait())
 }
 
+func TestStopWhenEmpty(t *testing.T) {
+	a := assert.New(t)
+
+	s := WithContext(context.Background())
+	s.Go(func(s *Context) error {
+		s.StopOnIdle()
+		return nil
+	})
+
+	select {
+	case <-s.Done():
+	//OK
+	case <-time.After(time.Second):
+		a.Fail("timeout waiting for Context.Done()")
+	}
+}
+
+func TestStopWhenAlreadyEmpty(t *testing.T) {
+	a := assert.New(t)
+
+	s := WithContext(context.Background())
+	s.StopOnIdle()
+
+	select {
+	case <-s.Done():
+	//OK
+	case <-time.After(time.Second):
+		a.Fail("timeout waiting for Context.Done()")
+	}
+}
+
+func TestStopWhenEmptyBackground(t *testing.T) {
+	a := assert.New(t)
+	s := Background()
+	s.StopOnIdle()
+	a.False(s.mu.stopOnIdle)
+}
+
 // Verify that a never-used Stopper behaves correctly.
 func TestUnused(t *testing.T) {
 	a := assert.New(t)

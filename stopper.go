@@ -60,10 +60,11 @@ type state struct {
 
 	mu struct {
 		sync.RWMutex
-		count    int
-		deferred []func()
-		err      error
-		stopping bool
+		count      int
+		deferred   []func()
+		err        error
+		stopping   bool
+		stopOnIdle bool
 	}
 }
 
@@ -284,39 +285,32 @@ func (c *Context) Stop(gracePeriod time.Duration) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
-	if c.mu.stopping {
-		return
-	}
-	c.mu.stopping = true
-	close(c.stopping)
-
-	// Cancel the context if nothing's currently running.
-	if c.mu.count == 0 {
-		c.cancelLocked(ErrStopped)
-	} else if gracePeriod > 0 {
-		go func() {
-			select {
-			case <-time.After(gracePeriod):
-				// Cancel after the grace period has expired. This
-				// should immediately terminate any well-behaved
-				// goroutines driven by Go().
-				c.mu.Lock()
-				defer c.mu.Unlock()
-				c.cancelLocked(ErrGracePeriodExpired)
-			case <-c.Done():
-				// We'll hit this path in a clean-exit, where apply()
-				// cancels the context after the last goroutine has
-				// exited.
-			}
-		}()
-	}
+	c.stopLocked(gracePeriod, c.Done())
 }
 
 // Stopping returns a channel that is closed when a graceful shutdown
 // has been requested or when a parent context has been stopped.
 func (c *Context) Stopping() <-chan struct{} {
 	return c.stopping
+}
+
+// StopOnIdle causes the Context to automatically call [Context.Stop]
+// once [Context.Len] equals zero. This is useful for stoppers that
+// represent a finite pool of tasks that will eventually conclude. All
+// methods on the Context will continue to operate in their usual
+// manners after calling this method. Calling this method on the
+// [Background] Context has no effect. Calling this method on an idle
+// Context behaves as if [Context.Stop] had been called instead.
+func (c *Context) StopOnIdle() {
+	if !c.canStop() {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.mu.stopOnIdle = true
+	if c.mu.count == 0 {
+		c.stopLocked(0, nil)
+	}
 }
 
 // Value implements context.Context.
@@ -385,8 +379,13 @@ func (s *state) apply(delta int) bool {
 		// Implementation error, not user problem.
 		panic("over-released")
 	}
-	if s.mu.count == 0 && s.mu.stopping {
-		s.cancelLocked(ErrStopped)
+	if s.mu.count == 0 {
+		if s.mu.stopOnIdle {
+			// The done channel is irrelevant, since the count is zero.
+			s.stopLocked(0, nil)
+		} else if s.mu.stopping {
+			s.cancelLocked(ErrStopped)
+		}
 	}
 	return true
 }
@@ -403,4 +402,35 @@ func (s *state) cancelLocked(err error) {
 
 func (s *state) canStop() bool {
 	return s != unstoppable
+}
+
+// stopLocked places the context into the stopping state. It will cancel
+// the context if no tasks remain.
+func (s *state) stopLocked(gracePeriod time.Duration, done <-chan struct{}) {
+	if s.mu.stopping {
+		return
+	}
+	s.mu.stopping = true
+	close(s.stopping)
+
+	// Cancel the context if nothing's currently running.
+	if s.mu.count == 0 {
+		s.cancelLocked(ErrStopped)
+	} else if gracePeriod > 0 {
+		go func() {
+			select {
+			case <-time.After(gracePeriod):
+				// Cancel after the grace period has expired. This
+				// should immediately terminate any well-behaved
+				// goroutines driven by Go().
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				s.cancelLocked(ErrGracePeriodExpired)
+			case <-done:
+				// We'll hit this path in a clean-exit, where apply()
+				// cancels the context after the last goroutine has
+				// exited.
+			}
+		}()
+	}
 }
