@@ -17,6 +17,7 @@ import (
 	"os/signal"
 	"runtime/trace"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"vawter.tech/stopper"
@@ -311,6 +312,30 @@ func ExampleContext_nested() {
 	// middle 2
 	// inner 1
 	// outer 0
+}
+
+func ExampleContext_StopOnIdle() {
+	ctx := stopper.WithContext(context.Background())
+	var nestedDidAccept atomic.Bool
+	ctx.Go(func(ctx *stopper.Context) error {
+		// It's still valid to create additional tasks or additional
+		// nested stoppers.
+		ok := ctx.Go(func(ctx *stopper.Context) error {
+			// Do nested tasks...
+			return nil
+		})
+		nestedDidAccept.Store(ok)
+		return nil
+	})
+	// StopOnIdle shouldn't be called until all parent tasks have been
+	// started.
+	ctx.StopOnIdle()
+	// Wait doesn't return until all tasks are complete.
+	err := ctx.Wait()
+	fmt.Printf("OK: %t %t\n", err == nil, nestedDidAccept.Load())
+
+	// Output:
+	// OK: true true
 }
 
 // This shows how the [runtime/trace] package, or any other package that creates
