@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.0
+  * Add `Context.StopOnIdle()` for bounded task pools.
+  * Add `stopper.Harden()` to export soft-stop behavior as `context.Context`.
+  * Add `stopper.Fn()` convenience adaptor.
+
 ## v1.1.0
   * Add `stopper.Invoker` type to allow users to decorate function calls
   * Add `stopper.WithInvoker()` constructor
