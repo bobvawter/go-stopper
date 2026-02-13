@@ -388,6 +388,16 @@ func ExampleContext_With_tracing() {
 	// trace written to trace.out
 }
 
+type Thing struct{}
+
+func (t *Thing) DoSomething() error { return nil }
+
+func ExampleFn() {
+	ctx := stopper.WithContext(context.Background())
+	t := &Thing{}
+	ctx.Go(stopper.Fn(t.DoSomething))
+}
+
 // This shows how the soft-stop behavior can be propagated to other APIs
 // via the [context.Context] interface.
 func ExampleHarden() {
@@ -397,6 +407,7 @@ func ExampleHarden() {
 		// This is a stand-in for any call to an API that accepts a
 		// context.Context.
 		<-hard.Done()
+		fmt.Println("Done")
 		return nil
 	})
 	soft.Stop(0)
@@ -404,6 +415,7 @@ func ExampleHarden() {
 		panic(err)
 	}
 	// Output:
+	// Done
 }
 
 // This shows the sequence of callbacks when nested contexts have Invokers

@@ -162,6 +162,8 @@ func WithInvoker(ctx context.Context, i Invoker) *Context {
 // channel to return instead of depending on [Context.Done]. This allows
 // a soft-stop, rather than waiting for the grace period to expire when
 // [Context.Stop] is called.
+//
+// See [Fn] to create function signature adaptors.
 func (c *Context) Call(fn func(ctx *Context) error) error {
 	if !c.apply(1) {
 		return ErrStopped
@@ -234,6 +236,8 @@ func (c *Context) Len() int {
 // channel to return instead of depending on [Context.Done]. This allows
 // a soft-stop, rather than waiting for the grace period to expire when
 // [Context.Stop] is called.
+//
+// See [Fn] to create function signature adaptors.
 func (c *Context) Go(fn func(ctx *Context) error) (accepted bool) {
 	if !c.apply(1) {
 		return false
