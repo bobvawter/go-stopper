@@ -2,439 +2,467 @@
 // Copyright 2025 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
-// Package stopper contains a utility for gracefully terminating
-// long-running tasks within a Go program.
 package stopper
 
 import (
 	"context"
 	"errors"
-	"sync"
+	"fmt"
+	"runtime"
+	"runtime/trace"
 	"time"
+
+	"vawter.tech/stopper/v2/internal/safe"
+	"vawter.tech/stopper/v2/internal/state"
 )
-
-// contextKey is a [context.Context.Value] key.
-type contextKey struct{}
-
-// unstoppable is a sentinel state instance shared by the background Context and
-// any derived siblings.
-var unstoppable = &state{
-	stopping: make(chan struct{}),
-}
-
-// background is returned by [Background].
-var background = &Context{
-	delegate: context.Background(),
-	state:    unstoppable,
-}
 
 // ErrStopped will be returned from [context.Cause] when the Context has
 // been stopped.
-var ErrStopped = errors.New("stopped")
+var ErrStopped = state.ErrStopped
 
 // ErrGracePeriodExpired will be returned from [context.Cause] when the
 // Context has been stopped, but the goroutines have not exited.
-var ErrGracePeriodExpired = errors.New("grace period expired")
+var ErrGracePeriodExpired = state.ErrGracePeriodExpired
 
-// A Context is conceptually similar to an [errgroup.Group] in that it
-// manages a [context.Context] whose lifecycle is associated with some
-// number of goroutines. Rather than canceling the associated context
-// when a goroutine returns an error, it cancels the context after the
-// Stop method is called and all associated goroutines have all exited.
+// Key is a [context.Context.Value] key for a [Context] used by [From].
+type Key struct{}
+
+// implKey is a [context.Context] key for a *impl.
+type implKey struct{}
+
+// A Context provides task lifecycle services.
 //
-// As an API convenience, the Context type implements [context.Context]
-// so that it fits into idiomatic context-plumbing.  The [From]
-// function can be used to retrieve a Context from any
-// [context.Context].
-type Context struct {
-	*state
-	delegate context.Context
-}
-
-// A state may be shared between multiple Context instances.
-type state struct {
-	cancel   func(error) // Invoked via cancelLocked.
-	invokers []Invoker
-	parent   *state
-	stopping chan struct{}
-
-	mu struct {
-		sync.RWMutex
-		count      int
-		deferred   []func()
-		err        error
-		stopping   bool
-		stopOnIdle bool
-	}
-}
-
-var _ context.Context = (*Context)(nil)
-
-// Background is analogous to [context.Background]. It returns a Context
-// which cannot be stopped or canceled, but which is otherwise
-// functional.
-func Background() *Context { return background }
-
-// From returns a pre-existing Context from the Context chain. Use
-// [WithContext] to construct a new Context.
+// A Context implements a two-phase cancellation model consisting of a
+// soft-stop signal ([Context.Stopping]) that allows graceful draining
+// of long-running tasks before a hard-stop where the context is
+// canceled ([Context.Done]).
 //
-// If the chain is not associated with a Context, the [Background]
-// instance will be returned.
-func From(ctx context.Context) *Context {
-	if s, ok := ctx.(*Context); ok {
-		return s
-	}
-	if s := ctx.Value(contextKey{}); s != nil {
-		return s.(*Context)
-	}
-	return Background()
+// Context type embeds the stdlib [context.Context] type so that it may
+// be freely combined with other golang libraries.  The package-level
+// [From] function can be used to retrieve a stopper Context from any
+// [context.Context]. The package-level [Call], [Defer], and [Go]
+// functions provide convenient access to the task-launching services
+// provided by a Context.
+//
+// Contexts may be created hierarchically, allowing stop signals to
+// propagate from parents to children (but not the other way around). A
+// variety of task Middleware may be attached to a stopper hierarchy or
+// to individual task executions.
+//
+// All methods on a Context are safe for concurrent use.
+//
+// Users who intend to mock the [Context] interface should make their
+// implementation of the Value method respond to [Key] with an instance
+// of [Context].
+type Context interface {
+	context.Context
+
+	// AddError appends additional errors to the value returned by
+	// [Context.Wait]. This is useful if the Context is being stopped in
+	// response to some external error. Note that this method does not
+	// interact with the installed [ErrorHandler].
+	AddError(err ...error)
+
+	// Call executes the given function within the current goroutine and
+	// monitors its lifecycle. That is, both Call and Wait will block
+	// until the function has returned.
+	//
+	// Call returns any error from the function with no other side
+	// effects. That is, it will not invoke any installed [ErrorHandler].
+	//
+	// If the Context has already been stopped, [ErrStopped] will be
+	// returned.
+	//
+	// See [Call] or [Fn] to adapt various function signatures.
+	Call(fn Func, opts ...TaskOption) error
+
+	// Defer registers a callback that will be executed after
+	// [Context.Stop] has been called and all tasks managed by the
+	// Context have completed.
+	//
+	// This method can be used to clean up resources that are used by
+	// goroutines associated with the Context (e.g. closing database
+	// connections). The Context will already have been canceled by the
+	// time the Func is run, so the deferred behaviors should be
+	// associated with [context.Background] or similar. Callbacks will
+	// be executed in a LIFO manner. Any error returned by the deferred
+	// function will be available from [Context.Wait].
+	//
+	// If the Context has already stopped, the callback will be executed
+	// immediately and this method will return false. Otherwise, this
+	// method will return true to indicate that the callback was retained
+	// for later execution.
+	//
+	// See [Defer] or [Fn] to adapt various function signatures.
+	Defer(fn Func) (deferred bool)
+
+	// Done implements [context.Context] and represents reaching the
+	// hard-stop phase. The channel that is returned will be closed when
+	// Stop has been called and all tasks and deferred functions have
+	// completed. For soft-stop notifications, use [Context.Stopping].
+	Done() <-chan struct{}
+
+	// Err implements [context.Context]. It will be non-nil when the
+	// Context has entered a hard-stop condition. The returned value
+	// may be a wrapper over multiple errors.
+	Err() error
+
+	// Go spawns a new goroutine to execute the given Func and monitors
+	// its lifecycle.
+	//
+	// If the Func returns an error, the task's [ErrorHandler] will be
+	// invoked. The default handler is [ErrorHandlerStop], which will stop
+	// the context on the first error.
+	//
+	// If the Context has already been stopped, [ErrStopped] will be
+	// returned.
+	//
+	// See [Go] or [Fn] to adapt various function signatures.
+	Go(fn Func, opts ...TaskOption) error
+
+	// IsStopping returns true once [Stop] has been called.  See also
+	// [Stopping] for a notification-based API.
+	IsStopping() bool
+
+	// Len returns the number of tasks being tracked by the Context.
+	// This includes tasks managed by child stoppers.
+	Len() int
+
+	// Stop begins a graceful shutdown of the Context.
+	//
+	// When this method is called, the stopper will move into a
+	// soft-stop condition by closing the [Context.Stopping] channel. It
+	// will reject any new task creation. The stopper will move to a
+	// hard-stop condition after a grace period has expired.
+	//
+	// Once all tasks managed by the Context have completed, the
+	// associated Context will be canceled, thus closing the Done
+	// channel.
+	Stop(opts ...StopOption)
+
+	// Stopping returns a channel that is closed when a graceful
+	// shutdown has been requested or when a parent context has been
+	// stopped.
+	Stopping() <-chan struct{}
+
+	// StoppingContext adapts the soft-stop behaviors of a stopper into
+	// a [context.Context]. This can be used whenever it is necessary to
+	// call other APIs that should be made aware of the soft-stop
+	// condition.
+	//
+	// The returned context has the following behaviors:
+	//   - The [context.Context.Done] method returns [Context.Stopping].
+	//   - The [context.Context.Err] method returns an error that is
+	//     both [context.Canceled] and [ErrStopped] if the context has
+	//     been stopped. Otherwise, it returns [Context.Err].
+	//   - All other interface methods delegate to the receiver.
+	StoppingContext() context.Context
+
+	// Wait will block until Stop has been called and all associated
+	// tasks have exited or the parent context has been canceled. This
+	// method will return errors from any of the tasks passed to Go or
+	// via [StopError].
+	Wait() error
+
+	// WaitCtx is an interruptable version of [Context.Wait]. If the
+	// argument's Done() channel is closed, the argument's Err()
+	// value will be returned.
+	WaitCtx(ctx context.Context) error
+
+	// WithDelegate returns a Context that is otherwise equivalent to
+	// the receiver, save that all [context.Context] behavior is
+	// delegated to the new context. This enables interaction, generally
+	// via [Middleware], with the [runtime/trace] package or other
+	// libraries that generate custom [context.Context] instances.
+	//
+	// The WithDelegate method does not create a new, nested stopper
+	// hierarchy, so it is less expensive than calling [WithContext] in
+	// tracing scenarios.
+	WithDelegate(ctx context.Context) Context
 }
 
-// IsStopping is a convenience method to determine if a stopper is
-// associated with a Context and if work should be stopped.
+// From returns an enclosing Context or returns false if the argument is
+// not managed by a stopper. This function will unwrap a stdlib context
+// returned from [Context.StoppingContext].
+func From(ctx context.Context) (found Context, ok bool) {
+	if found, ok := ctx.Value(Key{}).(Context); ok {
+		return found, true
+	}
+	return nil, false
+}
+
+// IsStopping is a convenience method to determine the argument is both
+// managed by a stopper [Context] and that [Context] is stopping. This
+// function will always return false if the argument is not managed by a
+// stopper.
 func IsStopping(ctx context.Context) bool {
-	return From(ctx).IsStopping()
+	s, ok := From(ctx)
+	if !ok {
+		return false
+	}
+	return s.IsStopping()
+}
+
+// New returns a ready-to-use Context.
+func New(opts ...ConfigOption) Context {
+	return WithContext(context.Background(), opts...)
 }
 
 // WithContext creates a new Context whose work will be immediately
 // canceled when the parent context is canceled. If the provided context
-// is already managed by a Context, a call to the enclosing
-// [Context.Stop] method will also trigger a call to Stop in the
-// newly-constructed Context.
-func WithContext(ctx context.Context) *Context {
-	// Might be background, which never stops.
-	parent := From(ctx)
+// is a stopper [Context], the newly constructed stopper will be a child
+// of the pre-existing stopper.
+func WithContext(ctx context.Context, opts ...ConfigOption) Context {
+	var parent *state.State
+	if i, ok := ctx.Value(implKey{}).(*impl); ok {
+		parent = i.st
+	}
 
+	// Flatten and merge configuration data.
+	next := &config{}
+	for _, opt := range opts {
+		opt(next)
+	}
+	var cfg *config
+	if parent == nil {
+		cfg = &config{}
+	} else {
+		cfg = parent.Config().(*config).Clone()
+	}
+	cfg.Merge(next)
+	cfg.Sanitize()
+
+	ctx, traceTask := trace.NewTask(ctx, cfg.name)
 	ctx, cancel := context.WithCancelCause(ctx)
-	s := &Context{
-		state: &state{
-			cancel:   cancel,
-			invokers: parent.invokers,
-			parent:   parent.state,
-			stopping: make(chan struct{}),
-		},
+	cleanup := func(err error) {
+		cancel(err)
+		traceTask.End()
+	}
+
+	s := &impl{
 		delegate: ctx,
+		st:       state.New(cleanup, cfg, parent),
 	}
 
 	// Propagate a parent stop or context cancellation into a Stop call
-	// to ensure that all notification channels are closed.
+	// to ensure that all notification channels are closed. This
+	// goroutine is left untracked since it doesn't represent
+	// user-provided work.
 	go func() {
-		select {
-		case <-parent.Stopping():
-		case <-s.Done():
+		if parent == nil {
+			<-s.Done()
+		} else {
+			select {
+			case <-parent.Stopping():
+			case <-s.Done():
+			}
 		}
-		s.Stop(0)
+		s.Stop()
 	}()
 	return s
 }
 
-// Func is a convenience type alias for the signature of functions invoked by a
-// [Context].
-type Func = func(*Context) error
+// Func is the canonical task function signature accepted by a
+// [Context]. See [Fn] to convert other function signatures to a Func. A
+// Func value should never be nil.
+type Func func(ctx Context) error
 
-// An Invoker arranges to call the provided Func. See [WithInvoker] for
-// additional details.
-type Invoker func(fn Func) Func
+// A RecoveredError will be returned by a task that panics.
+type RecoveredError = safe.RecoveredError
 
-// WithInvoker is equivalent to [WithContext], except that the given [Invoker]
-// will be used to execute the functions passed to [Context.Call] and
-// [Context.Go]. The Invoker of a newly-defined context will be composed with
-// the Invoker defined in a parent context, if any.
-func WithInvoker(ctx context.Context, i Invoker) *Context {
-	ret := WithContext(ctx)
-	// Don't mutate original backing slice
-	next := make([]Invoker, len(ret.invokers), len(ret.invokers)+1)
-	copy(next, ret.invokers)
-	ret.invokers = append(next, i)
-	return ret
+type impl struct {
+	delegate context.Context
+	st       *state.State
 }
 
-// Call executes the given function within the current goroutine and
-// monitors its lifecycle. That is, both Call and Wait will block until
-// the function has returned.
-//
-// Call returns any error from the function with no other side effects.
-// Unlike the Go method, Call does not stop the Context if the function
-// returns an error. If the Context has already been stopped,
-// [ErrStopped] will be returned.
-//
-// The function passed to Call should prefer the [Context.Stopping]
-// channel to return instead of depending on [Context.Done]. This allows
-// a soft-stop, rather than waiting for the grace period to expire when
-// [Context.Stop] is called.
-//
-// See [Fn] to create function signature adaptors.
-func (c *Context) Call(fn func(ctx *Context) error) error {
-	if !c.apply(1) {
+var _ Context = (*impl)(nil)
+
+func (c *impl) AddError(err ...error) { c.st.AddErrors(err...) }
+
+func (c *impl) Call(fn Func, opts ...TaskOption) error {
+	if !c.st.Apply(1) {
 		return ErrStopped
 	}
-	defer c.apply(-1)
-	for i := len(c.invokers) - 1; i >= 0; i-- {
-		fn = c.invokers[i](fn)
-	}
-	return fn(c)
+	defer func() { c.st.Apply(-1) }()
+
+	iCtx, inv := c.taskInvoker(true, opts)
+	return inv(iCtx, fn)
 }
 
-// Deadline implements [context.Context].
-func (c *Context) Deadline() (deadline time.Time, ok bool) { return c.delegate.Deadline() }
+func (c *impl) Deadline() (deadline time.Time, ok bool) { return c.delegate.Deadline() }
 
-// Defer registers a callback that will be executed after the
-// [Context.Done] channel is closed. This method can be used to clean up
-// resources that are used by goroutines associated with the Context
-// (e.g. closing database connections). The Context will already have
-// been canceled by the time the callback is run, so its behaviors
-// should be associated with [context.Background] or similar. Callbacks
-// will be executed in a LIFO manner. If the Context has already
-// stopped, the callback will be executed immediately.
-//
-// Calling this method on the Background context will panic, since that
-// context can never be cancelled.
-func (c *Context) Defer(fn func()) {
-	if !c.canStop() {
-		panic(errors.New("cannot call Context.Defer() on a background context"))
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.Err() != nil {
-		fn()
-		return
-	}
-	c.mu.deferred = append(c.mu.deferred, fn)
+func (c *impl) Defer(fn Func) bool {
+	return c.st.AddDeferred(func() error {
+		return fn(c)
+	})
 }
 
-// Done implements [context.Context]. The channel that is returned will
-// be closed when Stop has been called and all associated goroutines
-// have exited. The returned channel will be closed immediately if the
-// parent context (passed to [WithContext]) is canceled. Functions
-// passed to [Context.Go] should prefer [Context.Stopping] instead.
-func (c *Context) Done() <-chan struct{} { return c.delegate.Done() }
+func (c *impl) Done() <-chan struct{} { return c.delegate.Done() }
 
-// Err implements context.Context. When the return value for this is
-// [context.ErrCanceled], [context.Cause] will return [ErrStopped] if
-// the context cancellation resulted from a call to Stop.
-func (c *Context) Err() error { return c.delegate.Err() }
+func (c *impl) Err() error { return c.delegate.Err() }
 
-// Len returns the number of tasks being tracked by the Context. This
-// includes tasks started by derived Contexts.
-func (c *Context) Len() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.mu.count
-}
+func (c *impl) Len() int { return c.st.Len() }
 
-// Go spawns a new goroutine to execute the given function and monitors
-// its lifecycle.
-//
-// If the function returns an error, the Stop method will be called. The
-// returned error will be available from Wait once the remaining
-// goroutines have exited.
-//
-// This method will not execute the function and return false if Stop
-// has already been called.
-//
-// The function passed to Go should prefer the [Context.Stopping]
-// channel to return instead of depending on [Context.Done]. This allows
-// a soft-stop, rather than waiting for the grace period to expire when
-// [Context.Stop] is called.
-//
-// See [Fn] to create function signature adaptors.
-func (c *Context) Go(fn func(ctx *Context) error) (accepted bool) {
-	if !c.apply(1) {
-		return false
+func (c *impl) Go(fn Func, opts ...TaskOption) error {
+	if !c.st.Apply(1) {
+		return ErrStopped
 	}
-	for i := len(c.invokers) - 1; i >= 0; i-- {
-		fn = c.invokers[i](fn)
-	}
-
+	iCtx, inv := c.taskInvoker(false, opts)
 	go func() {
-		defer c.apply(-1)
-		err := fn(c)
-		// Success.
-		if err == nil {
-			return
-		}
-		// Background context.
-		if !c.canStop() {
-			return
-		}
-		// Set the error to be returned by Wait().
-		c.mu.Lock()
-		if c.mu.err == nil {
-			c.mu.err = err
-		}
-		c.mu.Unlock()
-		// Mark the context as stopping.
-		c.Stop(0)
+		defer c.st.Apply(-1)
+		// The invoker will delegate to an ErrorHandler.
+		_ = inv(iCtx, fn)
 	}()
-	return true
+	return nil
 }
 
-// IsStopping returns true once [Stop] has been called.  See also
-// [Stopping] for a notification-based API.
-func (c *Context) IsStopping() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.mu.stopping
-}
+func (c *impl) IsStopping() bool { return c.st.IsStopping() }
 
-// Stop begins a graceful shutdown of the Context. When this method is
-// called, the Stopping channel will be closed.  Once all goroutines
-// started by Go have exited, the associated Context will be cancelled,
-// thus closing the Done channel. If the gracePeriod is non-zero, the
-// context will be forcefully cancelled if the goroutines have not
-// exited within the given timeframe.
-func (c *Context) Stop(gracePeriod time.Duration) {
-	if !c.canStop() {
-		return
+func (c *impl) Stop(opts ...StopOption) {
+	// Initialize the stop configuration from the context config.
+	stopCfg := &stop{
+		gracePeriod: c.config().gracePeriod,
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.stopLocked(gracePeriod, c.Done())
-}
-
-// Stopping returns a channel that is closed when a graceful shutdown
-// has been requested or when a parent context has been stopped.
-func (c *Context) Stopping() <-chan struct{} {
-	return c.stopping
-}
-
-// StopOnIdle causes the Context to automatically call [Context.Stop]
-// once [Context.Len] equals zero. This is useful for stoppers that
-// represent a finite pool of tasks that will eventually conclude. All
-// methods on the Context will continue to operate in their usual
-// manners after calling this method. Calling this method on the
-// [Background] Context has no effect. Calling this method on an idle
-// Context behaves as if [Context.Stop] had been called instead.
-func (c *Context) StopOnIdle() {
-	if !c.canStop() {
-		return
+	for _, opt := range opts {
+		opt(stopCfg)
 	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.mu.stopOnIdle = true
-	if c.mu.count == 0 {
-		c.stopLocked(0, nil)
+	stopCfg.Sanitize()
+
+	if stopCfg.onIdle {
+		c.st.StopOnIdle(*stopCfg.gracePeriod)
+	} else {
+		c.st.Stop(*stopCfg.gracePeriod)
 	}
 }
 
-// Value implements context.Context.
-func (c *Context) Value(key any) any {
-	if _, ok := key.(contextKey); ok {
+func (c *impl) Stopping() <-chan struct{} { return c.st.Stopping() }
+
+func (c *impl) StoppingContext() context.Context {
+	return (*stoppingCtx)(c)
+}
+
+// String is for debugging use only.
+func (c *impl) String() string {
+	return fmt.Sprintf("%s: (%d tasks) (%d errors) (stopping=%t)",
+		c.config().name, c.st.Len(), len(c.st.Errors()), c.st.IsStopping())
+}
+
+func (c *impl) Value(key any) any {
+	switch key.(type) {
+	case Key:
+		return Context(c)
+	case implKey:
 		return c
+	default:
+		return c.delegate.Value(key)
 	}
-	return c.delegate.Value(key)
 }
 
-// Wait will block until Stop has been called and all associated
-// goroutines have exited or the parent context has been cancelled. This
-// method will return the first, non-nil error from any of the callbacks
-// passed to Go. If Wait is called on the [Background] instance, it will
-// immediately return nil.
-func (c *Context) Wait() error {
-	if !c.canStop() {
-		return nil
-	}
-	<-c.Done()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.mu.err
+func (c *impl) Wait() error {
+	return c.WaitCtx(context.Background())
 }
 
-// With returns a Context that is otherwise equivalent to the receiver, save
-// that all [context.Context] behavior is delegated to the new context. This
-// enables interaction with the [runtime/trace] package or other libraries that
-// generate custom [context.Context] instances.
-//
-// Since the With method does not create a new, nested stopper hierarchy, it is
-// less expensive than calling [WithContext] in tracing scenarios.
-func (c *Context) With(ctx context.Context) *Context {
-	return &Context{
+func (c *impl) WaitCtx(ctx context.Context) error {
+	select {
+	case <-c.Done():
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+
+	return errors.Join(c.st.Errors()...)
+}
+
+func (c *impl) WithDelegate(ctx context.Context) Context {
+	return &impl{
 		delegate: ctx,
-		state:    c.state,
+		st:       c.st,
 	}
 }
 
-// apply is used to maintain the count of started goroutines. It returns
-// true if the delta was applied.
-func (s *state) apply(delta int) bool {
-	if !s.canStop() {
-		return true
+func (c *impl) config() *config {
+	return c.st.Config().(*config)
+}
+
+func (c *impl) taskInvoker(returnErr bool, opts []TaskOption) (Context, Invoker) {
+	ctxCfg := c.config()
+	taskCfg := applyTaskOpts(ctxCfg.taskOpts, opts)
+
+	// Install runtime tracing.
+	traceCtx, traceTask := trace.NewTask(c, taskCfg.name)
+	iCtx := c.WithDelegate(traceCtx)
+
+	// Call setup in declaration order.
+	invokers := make([]Invoker, len(taskCfg.mw))
+	for idx, mw := range taskCfg.mw {
+		iCtx, invokers[idx] = mw(iCtx)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Don't allow new goroutines to be added when stopping.
-	if s.mu.stopping && delta >= 0 {
-		return false
-	}
-
-	// Ensure that nested jobs prolong the lifetime of the parent
-	// context to prevent premature cancellation. Verify that the parent
-	// accepted the delta in case it was just stopped, but our helper
-	// goroutine hasn't yet called Stop on this instance.
-	if !s.parent.apply(delta) {
-		return false
-	}
-
-	s.mu.count += delta
-	if s.mu.count < 0 {
-		// Implementation error, not user problem.
-		panic("over-released")
-	}
-	if s.mu.count == 0 {
-		if s.mu.stopOnIdle {
-			// The done channel is irrelevant, since the count is zero.
-			s.stopLocked(0, nil)
-		} else if s.mu.stopping {
-			s.cancelLocked(ErrStopped)
+	// Build the invocation chain from the bottom up.
+	chain := InvokerCall
+	for i := len(invokers) - 1; i >= 0; i-- {
+		invoker := invokers[i] // Capture
+		nextInChain := chain   // Capture
+		chain = func(ctx Context, task Func) error {
+			return invoker(ctx, func(ctx Context) error {
+				return nextInChain(ctx, task)
+			})
 		}
 	}
-	return true
-}
 
-// cancelLocked invokes the context-cancellation function and then
-// executes any deferred callbacks.
-func (s *state) cancelLocked(err error) {
-	s.cancel(err)
-	for i := len(s.mu.deferred) - 1; i >= 0; i-- {
-		s.mu.deferred[i]()
-	}
-	s.mu.deferred = nil
-}
+	// Install a panic handler at the root of the chain.
+	return iCtx, func(ctx Context, task Func) (outErr error) {
+		defer traceTask.End()
 
-func (s *state) canStop() bool {
-	return s != unstoppable
-}
+		// Optionally, inject TaskInfo at the root for Middleware.
+		var taskDone chan struct{}
+		var taskInfo *TaskInfo
+		if !ctxCfg.noTaskInfo {
+			taskDone = make(chan struct{})
+			defer close(taskDone)
 
-// stopLocked places the context into the stopping state. It will cancel
-// the context if no tasks remain.
-func (s *state) stopLocked(gracePeriod time.Duration, done <-chan struct{}) {
-	if s.mu.stopping {
-		return
-	}
-	s.mu.stopping = true
-	close(s.stopping)
+			taskInfo = &TaskInfo{
+				Context:     c,
+				ContextName: ctxCfg.name,
+				Done:        taskDone,
+				Started:     time.Now(),
+				Task:        task,
+				TaskName:    taskCfg.name,
+			}
+			ctx = ctx.WithDelegate(
+				context.WithValue(ctx, taskInfoKey{}, taskInfo))
+		}
 
-	// Cancel the context if nothing's currently running.
-	if s.mu.count == 0 {
-		s.cancelLocked(ErrStopped)
-	} else if gracePeriod > 0 {
-		go func() {
-			select {
-			case <-time.After(gracePeriod):
-				// Cancel after the grace period has expired. This
-				// should immediately terminate any well-behaved
-				// goroutines driven by Go().
-				s.mu.Lock()
-				defer s.mu.Unlock()
-				s.cancelLocked(ErrGracePeriodExpired)
-			case <-done:
-				// We'll hit this path in a clean-exit, where apply()
-				// cancels the context after the last goroutine has
-				// exited.
+		defer func() {
+			if r := recover(); r != nil {
+				rErr, ok := r.(error)
+				if !ok {
+					rErr = fmt.Errorf("%v", r)
+				}
+				stack := make([]uintptr, 32)
+				stack = stack[:runtime.Callers(2, stack)]
+				rErr = &RecoveredError{
+					Err:   rErr,
+					Stack: stack,
+				}
+				outErr = errors.Join(outErr, rErr)
+			}
+			if outErr == nil {
+				return
+			}
+			outErr = fmt.Errorf("%s: %w", taskCfg.name, outErr)
+			if taskInfo != nil {
+				taskInfo.Error.Store(&outErr)
+			}
+			if returnErr {
+				return
+			}
+			// Delegate to installed handler.
+			if h := taskCfg.errHandler; h != nil {
+				h(ctx, outErr)
+				outErr = nil
 			}
 		}()
+
+		return chain(ctx, task)
 	}
 }

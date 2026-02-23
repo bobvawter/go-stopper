@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.0.0
+  * Complete API overhaul. See the [migration guide](doc/migration.md)
+    for a detailed list of changes from v1.
+
 ## v1.2.0
   * Add `Context.StopOnIdle()` for bounded task pools.
   * Add `stopper.Harden()` to export soft-stop behavior as `context.Context`.

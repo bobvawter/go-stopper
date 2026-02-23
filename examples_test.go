@@ -15,97 +15,209 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/signal"
+	"runtime"
 	"runtime/trace"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"vawter.tech/stopper"
+	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/limit"
 )
 
+// The simplest possible use of the API.
+func Example() {
+	ctx := stopper.New()         // Create a stopper.
+	_ = stopper.Go(ctx, func() { // Run some tasks.
+		fmt.Println("Hello World!")
+	})
+	ctx.Stop()     // Put it in a soft-shutdown state.
+	_ = ctx.Wait() // Wait for any errors to be returned.
+}
+
 func Example_features() {
-	// Create a stopper context from an existing context.
-	ctx := stopper.WithContext(context.Background())
+	// Create a root stopper context.
+	ctx := stopper.New()
 
 	// Respond to signals.
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
-	stopper.StopOnReceive(ctx, time.Second, ch)
+	stopper.StopOnReceive(ctx, ch)
 
-	// Do work, often in a loop.
-	ctx.Go(func(ctx *stopper.Context) error {
+	// Do work, often in a loop. Error-handling omitted for brevity.
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
 		for !ctx.IsStopping() {
+			// Do stuff.
 		}
-		return nil
 	})
 
 	// Plays nicely with channels.
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
 		for {
 			select {
 			case <-ctx.Stopping():
-				return nil
+				return
 			case work := <-sourceOfWork:
 				// Launches additional workers.
-				ctx.Go(func(ctx *stopper.Context) error {
+				_ = stopper.Go(ctx, func(ctx stopper.Context) error {
 					return process(ctx, work)
 				})
 			}
 		}
 	})
 
-	subCtx := stopper.WithContext(ctx) // Nested contexts can be created.
-	subCtx.Stop(time.Second)           // Won't affect the outer context.
+	// Soft-stop can be exported to other libraries.
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
+		otherLibrary(ctx.StoppingContext())
+	})
 
-	// Blocks until all managed goroutines are done.
+	subCtx := stopper.WithContext(ctx) // Nested contexts can be created.
+	_ = stopper.Call(subCtx, func() { fmt.Println("Hello World!") })
+
+	ctx.Stop(stopper.StopGracePeriod(time.Second)) // Implicitly calls subCtx.Stop().
+	// Blocks until all managed tasks are done.
 	if err := ctx.Wait(); err != nil {
 		panic(err)
 	}
+	// Output:
+	// Hello World!
 }
 
-var sourceOfWork chan struct{}
+var sourceOfWork = make(chan struct{})
 
-// The stopper.Context type fits into existing context plumbing and can be
-// retrieved later on.
-func process[T any](ctxCtx context.Context, work T) error {
-	stopperCtx := stopper.From(ctxCtx)
-	stopperCtx.Go(func(ctx *stopper.Context) error {
-		return nil
+func otherLibrary(ctx context.Context) {
+	<-ctx.Done()
+}
+
+// The stopper.Context type fits into existing context plumbing and can
+// be retrieved later on.
+func process[T any](ctx context.Context, work T) error {
+	return stopper.Go(ctx, func(ctx context.Context) {
+		// Do work...
+		runtime.KeepAlive(work)
 	})
-	return nil
+}
+
+// A pattern for creating a child stopper that processes a finite number
+// of tasks.
+func Example_workPool() {
+	var count atomic.Int32
+
+	// Assume the existence of some server-wide root stopper.
+	rootContext := stopper.New()
+
+	// Create a child stopper to handle a batch of tasks.
+	childCtx := stopper.WithContext(rootContext,
+		stopper.WithTaskOptions(
+			// Record all errors instead of stopping on the first one.
+			stopper.TaskErrHandler(stopper.ErrorHandlerRecord),
+			// Push back on calls to Go() to limit total number of workers.
+			stopper.TaskMiddleware(limit.WithMaxConcurrency(10)),
+		))
+	for range 20 {
+		_ = stopper.Go(childCtx, func() error {
+			count.Add(1)
+			return nil
+		})
+	}
+	// Make childCtx stop automatically. If the worker tasks above were
+	// to create additional tasks or additional nested stoppers,
+	// childCtx would wait for them to finish, too.
+	childCtx.Stop(stopper.StopOnIdle())
+	if err := childCtx.Wait(); err != nil {
+		slog.ErrorContext(childCtx, "task error", "error", err)
+	} else {
+		fmt.Println(count.Load())
+	}
+	// Output:
+	// 20
+}
+
+// Middleware are helper functions executed around tasks.
+func ExampleMiddleware() {
+	// Middleware can be attached to all tasks managed by the context or
+	// its children.
+	ctx := stopper.New(
+		stopper.WithTaskOptions(
+			stopper.TaskMiddleware(func(outer stopper.Context) (stopper.Context, stopper.Invoker) {
+				// The setup phase of a Middleware is executed within
+				// Call() or Go(), providing access to the invoking
+				// context.
+				fmt.Println("setup outer")
+				return outer, func(ctx stopper.Context, task stopper.Func) error {
+					// The inner context will be a separate goroutine if
+					// Go() is called.
+					fmt.Println("before outer")
+					defer fmt.Println("after outer")
+					return task(ctx)
+				}
+			}),
+		),
+	)
+
+	// Middleware can also be attached to individual task executions.
+	// These will be composed with the middleware attached to the
+	// stopper.
+	_ = stopper.Call(ctx,
+		func() { fmt.Println("task") },
+		stopper.TaskMiddleware(func(outer stopper.Context) (stopper.Context, stopper.Invoker) {
+			fmt.Println("setup inner")
+			return outer, func(ctx stopper.Context, task stopper.Func) error {
+				fmt.Println("before inner")
+				defer fmt.Println("after inner")
+				return task(ctx)
+			}
+		}),
+	)
+
+	// Individual tasks can be isolated from inherited configuration.
+	_ = stopper.Call(ctx,
+		func() { fmt.Println("the end") },
+		stopper.TaskNoInherit(),
+	)
+	// Output:
+	// setup outer
+	// setup inner
+	// before outer
+	// before inner
+	// task
+	// after inner
+	// after outer
+	// the end
 }
 
 // A pattern for using a stopper with an accept/poll type of network listening
 // API.
 func Example_netServer() {
-	ctx := stopper.WithContext(context.Background())
+	ctx := stopper.New()
 
-	// Respond to interrupts with a 30-second grace period.
+	// Respond to interrupts.
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
-	stopper.StopOnReceive(ctx, 30*time.Second, ch)
+	stopper.StopOnReceive(ctx, ch)
 
 	// Open a network listener.
 	const addr = "127.0.0.1:13013"
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
-		panic(err)
+		slog.ErrorContext(ctx, "could not open listener", "error", err)
+		return
 	}
-	// Close the listener when the context stops.
-	ctx.Go(func(ctx *stopper.Context) error {
+	// Close the listener during the soft-stop phase.
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
 		<-ctx.Stopping()
-		return l.Close()
+		_ = l.Close()
 	})
 	// Accept connections.
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
 		for {
 			conn, err := l.Accept()
 			// This returns an error when the listener has been closed.
 			if err != nil {
-				return nil
+				return
 			}
 			// Handle the connection in its own goroutine.
-			ctx.Go(func(ctx *stopper.Context) error {
+			_ = stopper.Go(ctx, func(ctx stopper.Context) {
 				defer func() { _ = conn.Close() }()
 
 				s := bufio.NewScanner(conn)
@@ -114,16 +226,14 @@ func Example_netServer() {
 
 				// Simulate an OS signal to stop the app.
 				ch <- os.Interrupt
-
-				return nil
 			})
 		}
 	})
 	// A task to send a message.
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func(ctx stopper.Context) error {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
-			panic(err)
+			return err
 		}
 		_, _ = conn.Write([]byte("Hello World!\n"))
 		if err := conn.Close(); err != nil {
@@ -139,25 +249,25 @@ func Example_netServer() {
 	// Hello World!
 }
 
-// An example showing the use of [stopper.Context.Call] when a goroutine is
-// already allocated by some other API. In this case, the HTTP server creates a
-// goroutine per request, but we still want to be able to interact with a
-// stopper hierarchy.
-func ExampleContext_Call_httpServer() {
-	ctx := stopper.WithContext(context.Background())
+// An example showing the use of [stopper.Context.Call] when a goroutine
+// is already allocated by some other API. In this case, the stdlib HTTP
+// server creates a goroutine per request, but we still want to be able
+// to interact with a stopper hierarchy.
+func Example_httpServer() {
+	ctx := stopper.New()
 
-	// Respond to interrupts with a 30-second grace period.
+	// Respond to interrupts.
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, os.Interrupt)
-	stopper.StopOnReceive(ctx, 30*time.Second, ch)
+	stopper.StopOnReceive(ctx, ch)
 
 	// The HTTP server creates goroutines for us and has its own expectations
 	// around goroutine/request lifecycles.
 	svr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// We use With() here so that a caller hangup can immediately stop any
-		// work. This is optional, and might not be desirable in all
-		// circumstances.
-		err := ctx.With(r.Context()).Call(func(ctx *stopper.Context) error {
+		// We use WithDelegate() here so that a caller hangup can
+		// immediately stop any work. This is optional and might not be
+		// desirable in all circumstances.
+		err := stopper.Call(ctx.WithDelegate(r.Context()), func() error {
 			data, err := io.ReadAll(r.Body)
 			if err != nil {
 				return err
@@ -183,9 +293,10 @@ func ExampleContext_Call_httpServer() {
 		slog.ErrorContext(ctx, "handler error", "error", err)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
+	defer svr.Close()
 
 	// A task to make an HTTP request.
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func() error {
 		_, err := svr.Client().Post(svr.URL, "text/plain", strings.NewReader("Hello World!"))
 		if err != nil {
 			// Returning an error here will make the call to Wait() below fail
@@ -206,20 +317,19 @@ func ExampleContext_Call_httpServer() {
 	// Hello World!
 }
 
-func ExampleContext_Defer() {
-	ctx := stopper.WithContext(context.Background())
+func ExampleContext_defer() {
+	ctx := stopper.New()
 	// Deferred functions are executed in reverse order.
-	ctx.Defer(func() {
+	_, _ = stopper.Defer(ctx, func() {
 		fmt.Println("defer 0")
 	})
-	ctx.Defer(func() {
+	_, _ = stopper.Defer(ctx, func() {
 		fmt.Println("defer 1")
 	})
 	// This will run in a separate goroutine and then stop the context.
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
 		fmt.Println("task")
-		ctx.Stop(time.Second)
-		return nil
+		ctx.Stop(stopper.StopGracePeriod(time.Second))
 	})
 	// Wait for all tasks, including deferred callbacks to be complete.
 	if err := ctx.Wait(); err != nil {
@@ -235,18 +345,20 @@ func ExampleContext_Defer() {
 
 // This example shows how a background task that should execute on a
 // regular basis may be implemented.
-func ExampleContext_ticker() {
-	ctx := stopper.WithContext(context.Background())
+func Example_ticker() {
+	ctx := stopper.New()
 
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func(ctx stopper.Context) error {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
 		for {
 			// Do some background task.
 			select {
-			case <-time.After(time.Second):
+			case <-ticker.C:
 				// Loop around.
 			case <-ctx.Stopping():
 				// This channel closes when Stop() is called. The
-				// context is not yet cancelled at this point.
+				// context is not yet canceled at this point.
 				return nil
 			case <-ctx.Done():
 				// This is a hard-stop condition because either the
@@ -261,15 +373,15 @@ func ExampleContext_ticker() {
 	fmt.Println("task count:", ctx.Len())
 
 	// Calling Stop() makes the Stopping channel close, allowing
-	// processes one second before the context is hard-cancelled.
-	ctx.Stop(time.Second)
+	// processes one second before the context is hard-canceled.
+	ctx.Stop(stopper.StopGracePeriod(time.Second))
 
 	// Callers can wait for all tasks to finish, similar to an ErrGroup.
 	if err := ctx.Wait(); err != nil {
-		panic(err)
+		slog.ErrorContext(ctx, "task error", "error", err)
+	} else {
+		fmt.Println("task count:", ctx.Len())
 	}
-	fmt.Println("task count:", ctx.Len())
-
 	// Output:
 	// task count: 1
 	// task count: 0
@@ -278,19 +390,17 @@ func ExampleContext_ticker() {
 // This example shows that contexts may be nested. Stop signals will
 // propagate from enclosing to inner contexts, while the Len() and
 // Wait() methods are aware of child contexts.
-func ExampleContext_nested() {
-	outer := stopper.WithContext(context.Background())
+func ExampleContext_nesting() {
+	outer := stopper.New()
 	middle := stopper.WithContext(outer)
 	inner := stopper.WithContext(middle)
 
-	middle.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(middle, func(ctx stopper.Context) {
 		<-ctx.Stopping()
-		return nil
 	})
 
-	inner.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(inner, func(ctx stopper.Context) {
 		<-ctx.Stopping()
-		return nil
 	})
 
 	fmt.Println("outer", outer.Len())
@@ -298,15 +408,14 @@ func ExampleContext_nested() {
 	fmt.Println("inner", inner.Len())
 
 	// Stopping a parent context stops the child contexts.
-	outer.Stop(time.Second)
+	outer.Stop(stopper.StopGracePeriod(time.Second))
 
 	// Wait for all nested tasks.
 	if err := outer.Wait(); err != nil {
-		panic(err)
+		slog.ErrorContext(outer, "task error", "error", err)
+	} else {
+		fmt.Println("outer", outer.Len())
 	}
-
-	fmt.Println("outer", outer.Len())
-
 	// Output:
 	// outer 2
 	// middle 2
@@ -314,22 +423,20 @@ func ExampleContext_nested() {
 	// outer 0
 }
 
-func ExampleContext_StopOnIdle() {
-	ctx := stopper.WithContext(context.Background())
+func ExampleContext_stopOnIdle() {
+	ctx := stopper.New()
 	var nestedDidAccept atomic.Bool
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
 		// It's still valid to create additional tasks or additional
 		// nested stoppers.
-		ok := ctx.Go(func(ctx *stopper.Context) error {
+		err := stopper.Go(ctx, func() {
 			// Do nested tasks...
-			return nil
 		})
-		nestedDidAccept.Store(ok)
-		return nil
+		nestedDidAccept.Store(err == nil)
 	})
 	// StopOnIdle shouldn't be called until all parent tasks have been
 	// started.
-	ctx.StopOnIdle()
+	ctx.Stop(stopper.StopOnIdle())
 	// Wait doesn't return until all tasks are complete.
 	err := ctx.Wait()
 	fmt.Printf("OK: %t %t\n", err == nil, nestedDidAccept.Load())
@@ -338,9 +445,9 @@ func ExampleContext_StopOnIdle() {
 	// OK: true true
 }
 
-// This shows how the [runtime/trace] package, or any other package that creates
-// custom [context.Context] instances, can be interoperated with.
-func ExampleContext_With_tracing() {
+// A [stopper.Context] creates a [trace.Task] for itself and then for
+// each task passed to [stopper.Context.Call] or [stopper.Context.Go].
+func ExampleContext_tracing() {
 	f, err := os.OpenFile("trace.out", os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
 	if err != nil {
 		panic(err)
@@ -360,26 +467,26 @@ func ExampleContext_With_tracing() {
 	rootCtx, rootTask := trace.NewTask(context.Background(), "root task")
 	defer rootTask.End()
 
-	ctx := stopper.WithContext(rootCtx)
-	defer trace.StartRegion(ctx, "root region").End()
+	// Each stopper.Context has an implicit runtime/trace task, the name
+	// of which can be set.
+	ctx := stopper.WithContext(rootCtx, stopper.WithName("my stopper"))
 
-	midCtx, midTask := trace.NewTask(ctx, "mid task")
-	ctx.With(midCtx).Go(func(ctx *stopper.Context) error {
-		defer midTask.End()
-		defer trace.StartRegion(ctx, "mid region").End()
-		trace.Log(ctx, "message", "middle task is here")
+	// Similarly, each use of Call() or Go() creates a trace task.
+	_ = stopper.Go(ctx,
+		func(ctx stopper.Context) {
+			trace.Log(ctx, "message", "middle task is here")
 
-		innerCtx, innerTask := trace.NewTask(ctx, "inner task")
-		ctx.With(innerCtx).Go(func(ctx *stopper.Context) error {
-			defer innerTask.End()
-			defer trace.StartRegion(ctx, "inner region").End()
-			trace.Log(ctx, "message", "inner task is here")
-			ctx.Stop(time.Second)
-			return nil
-		})
-
-		return nil
-	})
+			// Nested tasks will result in nested trace tasks.
+			_ = stopper.Go(ctx,
+				func(ctx stopper.Context) {
+					trace.Log(ctx, "message", "inner task is here")
+					ctx.Stop(stopper.StopGracePeriod(time.Second))
+				},
+				stopper.TaskName("inner task"),
+			)
+		},
+		stopper.TaskName("middle task"),
+	)
 
 	if err := ctx.Wait(); err != nil {
 		panic(err)
@@ -388,72 +495,18 @@ func ExampleContext_With_tracing() {
 	// trace written to trace.out
 }
 
-type Thing struct{}
-
-func (t *Thing) DoSomething() error { return nil }
-
-func ExampleFn() {
-	ctx := stopper.WithContext(context.Background())
-	t := &Thing{}
-	ctx.Go(stopper.Fn(t.DoSomething))
-}
-
-// This shows how the soft-stop behavior can be propagated to other APIs
-// via the [context.Context] interface.
-func ExampleHarden() {
-	soft := stopper.WithContext(context.Background())
-	soft.Go(func(ctx *stopper.Context) error {
-		hard := stopper.Harden(ctx)
-		// This is a stand-in for any call to an API that accepts a
-		// context.Context.
-		<-hard.Done()
-		fmt.Println("Done")
-		return nil
-	})
-	soft.Stop(0)
-	if err := soft.Wait(); err != nil {
-		panic(err)
-	}
-	// Output:
-	// Done
-}
-
-// This shows the sequence of callbacks when nested contexts have Invokers
-// defined. Note that the setup phase is bottom-up, while execution is top-down.
-func ExampleWithInvoker_observeLifecycle() {
-	outer := stopper.WithInvoker(context.Background(),
-		func(fn stopper.Func) stopper.Func {
-			fmt.Println("outer setting up")
-			return func(ctx *stopper.Context) error {
-				fmt.Println("outer start")
-				defer fmt.Println("outer end")
-				return fn(ctx)
+func ExampleTaskInfo() {
+	ctx := stopper.New(stopper.WithName("outer"))
+	nested := stopper.WithContext(ctx, stopper.WithName("inner"))
+	_ = stopper.Call(nested,
+		func(ctx context.Context) {
+			if info, ok := stopper.TaskInfoFrom(ctx); ok {
+				fmt.Println(info.ContextName)
+				fmt.Println(info.TaskName)
 			}
-		})
-	middle := stopper.WithInvoker(outer,
-		func(fn stopper.Func) stopper.Func {
-			fmt.Println("middle setting up")
-			return func(ctx *stopper.Context) error {
-				fmt.Println("middle start")
-				defer fmt.Println("middle end")
-				return fn(ctx)
-			}
-		})
-	inner := stopper.WithContext(middle)
-	inner.Go(func(ctx *stopper.Context) error {
-		fmt.Println("here")
-		return nil
-	})
-	outer.Stop(time.Second)
-	if err := outer.Wait(); err != nil {
-		panic(err)
-	}
+		},
+		stopper.TaskName("my-task"))
 	// Output:
-	// middle setting up
-	// outer setting up
-	// outer start
-	// middle start
-	// here
-	// middle end
-	// outer end
+	// outer.inner
+	// my-task
 }

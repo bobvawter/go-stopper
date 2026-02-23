@@ -33,7 +33,7 @@ func TestLingering(t *testing.T) {
 	r.Equal([]string{
 		"lingering tasks detected",
 		"  stuck task started at:",
-		"    vawter.tech/stopper/linger.TestLingering (totally_fake.go:1234)",
+		"    vawter.tech/stopper/v2/linger.TestLingering ( totally_fake.go:1234 )",
 	}, fake.msgs)
 }
 
