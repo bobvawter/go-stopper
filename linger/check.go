@@ -7,9 +7,9 @@ import (
 	"runtime"
 )
 
-// CheckClean will fail a test if there are any active tasks being tracked by
-// the Recorder. A snapshot of the stack where the tasks were launched will be
-// written to the test log.
+// CheckClean will record a test error if there are any active tasks
+// being tracked by the Recorder. A snapshot of the stack where the
+// tasks were launched will be written into the test log.
 func CheckClean(t TestingT, r *Recorder) {
 	callers := r.Callers()
 	if len(callers) == 0 {
@@ -27,7 +27,7 @@ func CheckClean(t TestingT, r *Recorder) {
 		frames := runtime.CallersFrames(stack)
 		for {
 			frame, more := frames.Next()
-			t.Errorf("    %s (%s:%d)", frame.Function, frame.File, frame.Line)
+			t.Errorf("    %s ( %s:%d )", frame.Function, frame.File, frame.Line)
 			if !more {
 				break
 			}

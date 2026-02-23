@@ -4,67 +4,66 @@
 package linger
 
 import (
-	"context"
-	"fmt"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"vawter.tech/stopper"
+	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/limit"
 )
 
-func TestRecorder(t *testing.T) {
-	r := require.New(t)
-
-	rec := NewRecorder(1)
-	ctx := stopper.WithInvoker(context.Background(), rec.Invoke)
-
-	r.NoError(ctx.Call(func(ctx *stopper.Context) error {
-		checkRecorder(r, rec, "linger.TestRecorder")
-
-		return nil
-	}))
-
-	ctx.Go(func(ctx *stopper.Context) error {
-		checkRecorder(r, rec, "linger.TestRecorder")
-
-		return nil
-	})
-
-	ctx.Stop(10 * time.Second)
-	select {
-	case <-ctx.Done():
-		r.NoError(ctx.Wait())
-	case <-time.After(10 * time.Second):
-		r.Fail("timed out")
-	}
-}
+const sampleDepth = 2
 
 func TestRecorderNested(t *testing.T) {
 	r := require.New(t)
 
-	rec1 := NewRecorder(1)
-	ctx := stopper.WithInvoker(context.Background(), rec1.Invoke)
-	rec2 := NewRecorder(1)
-	ctx = stopper.WithInvoker(ctx, rec2.Invoke)
+	// The checker only wants to see one stack at a time.
+	mux := limit.WithMaxConcurrency(1)
 
-	r.NoError(ctx.Call(func(ctx *stopper.Context) error {
+	rec1 := NewRecorder(sampleDepth)
+	ctx := stopper.WithContext(t.Context(),
+		stopper.WithTaskOptions(
+			stopper.TaskMiddleware(mux, rec1.Middleware),
+		),
+	)
+	rec2 := NewRecorder(sampleDepth)
+	ctx = stopper.WithContext(ctx,
+		stopper.WithTaskOptions(
+			stopper.TaskMiddleware(rec2.Middleware),
+		),
+	)
+
+	// Call via interface.
+	r.NoError(ctx.Call(func(ctx stopper.Context) error {
 		checkRecorder(r, rec1, "linger.TestRecorderNested")
 		checkRecorder(r, rec2, "linger.TestRecorderNested")
 
 		return nil
 	}))
 
-	ctx.Go(func(ctx *stopper.Context) error {
+	// Call via helper.
+	r.NoError(stopper.Call(ctx, func() {
+		checkRecorder(r, rec1, "linger.TestRecorderNested")
+		checkRecorder(r, rec2, "linger.TestRecorderNested")
+	}))
+
+	// Call via interface.
+	r.NoError(ctx.Go(func(ctx stopper.Context) error {
 		checkRecorder(r, rec1, "linger.TestRecorderNested")
 		checkRecorder(r, rec2, "linger.TestRecorderNested")
 
 		return nil
-	})
+	}))
 
-	ctx.Stop(10 * time.Second)
+	// Call via helper.
+	r.NoError(stopper.Go(ctx, func() {
+		checkRecorder(r, rec1, "linger.TestRecorderNested")
+		checkRecorder(r, rec2, "linger.TestRecorderNested")
+	}))
+
+	ctx.Stop(stopper.StopGracePeriod(time.Second))
 	select {
 	case <-ctx.Done():
 		r.NoError(ctx.Wait())
@@ -75,10 +74,16 @@ func TestRecorderNested(t *testing.T) {
 
 func checkRecorder(r *require.Assertions, rec *Recorder, where string) {
 	sample := rec.Callers()
-	r.Len(sample, 1)    // One active task.
-	r.Len(sample[0], 1) // Sample to depth of 1.
+	r.Len(sample, 1) // One active task, enforced by mux.
+	r.Len(sample[0], sampleDepth)
 	frames := runtime.CallersFrames(sample[0])
-	frame, _ := frames.Next()
-	fmt.Printf("%s ( %s:%d )\n", frame.Function, frame.File, frame.Line)
-	r.True(strings.HasSuffix(frame.Function, where))
+	for {
+		frame, more := frames.Next()
+		if strings.HasSuffix(frame.Function, where) {
+			break
+		}
+		if !more {
+			r.Failf("did not find expected frame %s: check callersOffset constant", where)
+		}
+	}
 }

@@ -4,24 +4,23 @@
 package stopper_test
 
 import (
-	"context"
 	"os"
 	"os/signal"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
-	"vawter.tech/stopper"
+	"vawter.tech/stopper/v2"
 )
 
 func ExampleStopOnReceive_interrupt() {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt)
 
-	ctx := stopper.WithContext(context.Background())
-	stopper.StopOnReceive(ctx, time.Second, signals)
+	ctx := stopper.New()
+	stopper.StopOnReceive(ctx, signals)
 
-	ctx.Go(func(ctx *stopper.Context) error {
+	_ = ctx.Go(func(ctx stopper.Context) error {
 		// Do other work
 		return nil
 	})
@@ -35,11 +34,11 @@ func ExampleStopOnReceive_interrupt() {
 func TestStopOnReceiveClosed(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(context.Background())
+	ctx := stopper.New()
 
 	ch := make(chan struct{})
 	close(ch)
-	stopper.StopOnReceive(ctx, time.Second, ch)
+	stopper.StopOnReceive(ctx, ch)
 
 	select {
 	case <-ctx.Stopping():
@@ -51,15 +50,15 @@ func TestStopOnReceiveClosed(t *testing.T) {
 func TestStopOnReceiveStoppedElsewhere(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(context.Background())
+	ctx := stopper.New()
 
 	ch := make(chan struct{})
-	stopper.StopOnReceive(ctx, time.Second, ch)
+	stopper.StopOnReceive(ctx, ch)
 
-	ctx.Go(func(ctx *stopper.Context) error {
-		ctx.Stop(time.Second)
+	r.NoError(ctx.Go(func(ctx stopper.Context) error {
+		ctx.Stop(stopper.StopGracePeriod(time.Second))
 		return nil
-	})
+	}))
 
 	select {
 	case <-ctx.Stopping():
@@ -71,11 +70,11 @@ func TestStopOnReceiveStoppedElsewhere(t *testing.T) {
 func TestStopOnReceiveValue(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(context.Background())
+	ctx := stopper.New()
 
 	ch := make(chan struct{}, 1)
 	ch <- struct{}{}
-	stopper.StopOnReceive(ctx, time.Second, ch)
+	stopper.StopOnReceive(ctx, ch)
 
 	select {
 	case <-ctx.Stopping():

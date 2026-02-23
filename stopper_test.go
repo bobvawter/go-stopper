@@ -7,39 +7,24 @@ package stopper
 import (
 	"context"
 	"errors"
-	"sync"
+	"fmt"
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
-
-func TestAmbient(t *testing.T) {
-	a := assert.New(t)
-
-	s := From(context.Background())
-	a.Same(s, background)
-	a.False(s.canStop())
-
-	a.False(IsStopping(context.Background()))
-	s.Go(func(*Context) error { return nil })
-
-	// Should be a no-op.
-	s.Stop(0)
-	a.False(s.mu.stopping)
-	a.Nil(s.Err())
-	a.Nil(s.Wait())
-}
 
 func TestCancelOuter(t *testing.T) {
 	a := assert.New(t)
 
-	top, cancelTop := context.WithCancel(context.Background())
+	top, cancelTop := context.WithCancel(t.Context())
 
 	s := WithContext(top)
 
-	s.Go(func(*Context) error { <-s.Done(); return nil })
+	a.NoError(s.Go(func(Context) error { <-s.Done(); return nil }))
 
 	cancelTop()
 	select {
@@ -57,12 +42,12 @@ func TestCancelOuter(t *testing.T) {
 func TestCall(t *testing.T) {
 	a := assert.New(t)
 
-	s := WithContext(context.Background())
+	s := New()
 
 	// Verify that returning an error from the callback does not stop
 	// the Context.
 	err := errors.New("BOOM")
-	a.ErrorIs(s.Call(func(ctx *Context) error {
+	a.ErrorIs(s.Call(func(ctx Context) error {
 		// The call should increment the wait value.
 		a.Equal(1, s.Len())
 		return err
@@ -70,18 +55,18 @@ func TestCall(t *testing.T) {
 
 	a.False(s.IsStopping())
 
-	s.Stop(0)
+	s.Stop()
 	a.ErrorIs(
-		s.Call(func(ctx *Context) error { return nil }),
+		s.Call(func(ctx Context) error { return nil }),
 		ErrStopped)
 }
 
 func TestCallbackErrorStops(t *testing.T) {
 	a := assert.New(t)
 
-	s := WithContext(context.Background())
+	s := New()
 	err := errors.New("BOOM")
-	s.Go(func(*Context) error { return err })
+	a.NoError(s.Go(func(Context) error { return err }))
 	a.ErrorIs(s.Wait(), err)
 	a.Error(context.Cause(s), ErrStopped)
 }
@@ -89,22 +74,22 @@ func TestCallbackErrorStops(t *testing.T) {
 func TestChainStopper(t *testing.T) {
 	a := assert.New(t)
 
-	parent := WithContext(context.Background())
+	parent := New()
 	mid := context.WithValue(parent, parent, parent) // Demonstrate unwrapping.
 	child := WithContext(mid)
-	a.Same(parent.state, child.parent)
+	a.Same(parent.(*impl).st, child.(*impl).st.Parent())
 	a.Zero(parent.Len())
 	a.Zero(child.Len())
 
 	waitFor := make(chan struct{})
-	child.Go(func(*Context) error { <-waitFor; return nil })
+	a.NoError(child.Go(func(Context) error { <-waitFor; return nil }))
 
 	// Task tracking chains.
 	a.Equal(1, parent.Len())
 	a.Equal(1, child.Len())
 
 	// Verify that stopping the parent propagates to the child.
-	parent.Stop(0)
+	parent.Stop()
 	select {
 	case <-child.Stopping():
 	// OK
@@ -159,10 +144,39 @@ func TestChainStopper(t *testing.T) {
 	a.Zero(child.Len())
 }
 
+func TestConfigInherit(t *testing.T) {
+	r := require.New(t)
+
+	parent := New(
+		WithName("parent"),
+		WithGracePeriod(time.Second),
+	)
+
+	childA := WithContext(parent,
+		WithName("childA"),
+		WithNoInherit(),
+	)
+
+	childB := WithContext(parent,
+		WithName("childB"),
+	)
+
+	pCfg := parent.(*impl).config()
+	r.Equal(time.Second, *pCfg.gracePeriod)
+
+	cfgA := childA.(*impl).config()
+	r.Equal(DefaultGracePeriod, *cfgA.gracePeriod)
+	r.Equal("childA", cfgA.name)
+
+	cfgB := childB.(*impl).config()
+	r.Equal(pCfg.gracePeriod, cfgB.gracePeriod)
+	r.Equal("parent.childB", cfgB.name)
+}
+
 func TestDeadline(t *testing.T) {
 	a := assert.New(t)
 
-	ctxCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	ctxCtx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Hour))
 	defer cancel()
 
 	s := WithContext(ctxCtx)
@@ -171,82 +185,54 @@ func TestDeadline(t *testing.T) {
 	a.True(hasDeadline)
 }
 
-func TestDefer(t *testing.T) {
-	a := assert.New(t)
+func TestErrorHandlerRecord(t *testing.T) {
+	r := require.New(t)
+	s := WithContext(t.Context(),
+		WithTaskOptions(
+			TaskErrHandler(ErrorHandlerRecord),
+		))
 
-	var mu sync.Mutex
-	var calls []string
-	recordCall := func(s string) {
-		mu.Lock()
-		defer mu.Unlock()
-		calls = append(calls, s)
+	// The handler should not be used for Call.
+	err := Call(s, func() error { return errors.New("boom") })
+	r.ErrorContains(err, "boom")
+
+	// Ensure the handler is used for Go.
+	r.NoError(Go(s, func() error { return errors.New("boom") }))
+
+	// Spin until idle.
+	for s.Len() > 0 {
+		time.Sleep(time.Millisecond)
 	}
-
-	s := WithContext(context.Background())
-	s.Defer(func() { recordCall("fifo_a") })
-	s.Defer(func() { recordCall("fifo_b") })
-	s.Go(func(s *Context) error {
-		recordCall("fifo_c")
-		s.Stop(time.Second)
-		return nil
-	})
-	a.Nil(s.Wait())
-	s.Defer(func() { recordCall("immediate_a") })
-	s.Defer(func() { recordCall("immediate_b") })
-
-	mu.Lock()
-	defer mu.Unlock()
-	a.Equal([]string{"fifo_c", "fifo_b", "fifo_a", "immediate_a", "immediate_b"}, calls)
-
-	a.PanicsWithError("cannot call Context.Defer() on a background context", func() {
-		Background().Defer(func() {})
-	})
+	r.False(s.IsStopping())
+	s.Stop()
+	r.ErrorContains(s.Wait(), "boom")
 }
 
-func TestGracePeriod(t *testing.T) {
-	a := assert.New(t)
-
-	s := WithContext(context.Background())
-
-	// This goroutine waits on Done, which is not correct.
-	s.Go(func(s *Context) error { <-s.Done(); return nil })
-
-	s.Stop(time.Nanosecond)
-
-	<-s.Done()
-	a.ErrorIs(s.Err(), context.Canceled)
-	a.ErrorIs(context.Cause(s), ErrGracePeriodExpired)
+func TestFromBackground(t *testing.T) {
+	r := require.New(t)
+	found, ok := From(t.Context())
+	r.False(ok)
+	r.Nil(found)
 }
 
-func TestOverRelease(t *testing.T) {
-	a := assert.New(t)
-
-	s := WithContext(context.Background())
-	a.PanicsWithValue("over-released", func() {
-		s.apply(-1)
-	})
-}
-
-func TestParentAlreadyStopping(t *testing.T) {
-	a := assert.New(t)
-
-	parent := WithContext(context.Background())
-	child := WithContext(parent)
-
-	parent.mu.Lock()
-	parent.mu.stopping = true
-	parent.mu.Unlock()
-
-	a.False(child.Go(func(*Context) error { return nil }))
+func TestIsStoppingOther(t *testing.T) {
+	r := require.New(t)
+	r.False(IsStopping(t.Context()))
 }
 
 func TestStopper(t *testing.T) {
 	a := assert.New(t)
 
-	s := WithContext(context.Background())
-	a.True(s.canStop())
-	a.Same(s, From(s))                          // Direct cast
-	a.Same(s, From(context.WithValue(s, s, s))) // Unwrapping
+	s := New(WithName("tester"))
+	// Verify debugging output.
+	a.Equal("tester: (0 tasks) (0 errors) (stopping=false)", fmt.Sprintf("%s", s))
+
+	found, ok := From(s) // Direct cast
+	a.True(ok)
+	a.Same(s, found)
+	found, ok = From(context.WithValue(s, s, s)) // Unwrapping
+	a.True(ok)
+	a.Same(s, found)
 	select {
 	case <-s.Stopping():
 		a.Fail("should not be stopping yet")
@@ -256,10 +242,11 @@ func TestStopper(t *testing.T) {
 	a.False(IsStopping(s))
 
 	waitFor := make(chan struct{})
-	a.True(s.Go(func(*Context) error { <-waitFor; return nil }))
-	a.True(s.Go(func(*Context) error { return nil }))
+	a.NoError(s.Go(func(Context) error { <-waitFor; return nil }))
+	a.Equal("tester: (1 tasks) (0 errors) (stopping=false)", fmt.Sprintf("%s", s))
+	a.NoError(s.Go(func(Context) error { return nil }))
 
-	s.Stop(0)
+	s.Stop()
 	select {
 	case <-s.Stopping():
 	// OK
@@ -267,12 +254,12 @@ func TestStopper(t *testing.T) {
 		a.Fail("timeout waiting for stopped")
 	}
 
-	// Verify that the context is stopping, but not cancelled.
+	// Verify that the context is stopping but not canceled.
 	a.True(IsStopping(s))
 	a.Nil(s.Err())
 
 	// It's a no-op to run new routines after stopping.
-	a.False(s.Go(func(*Context) error { return nil }))
+	a.ErrorIs(s.Go(func(Context) error { return nil }), ErrStopped)
 
 	// Stop the waiting goroutines.
 	close(waitFor)
@@ -288,16 +275,17 @@ func TestStopper(t *testing.T) {
 	a.NotNil(s.Err())
 	a.ErrorIs(context.Cause(s), ErrStopped)
 	a.Nil(s.Wait())
+	a.Equal("tester: (0 tasks) (0 errors) (stopping=true)", fmt.Sprintf("%s", s))
 }
 
 func TestStopWhenEmpty(t *testing.T) {
 	a := assert.New(t)
 
-	s := WithContext(context.Background())
-	s.Go(func(s *Context) error {
-		s.StopOnIdle()
+	s := New()
+	a.NoError(s.Go(func(s Context) error {
+		s.Stop(StopOnIdle())
 		return nil
-	})
+	}))
 
 	select {
 	case <-s.Done():
@@ -305,116 +293,105 @@ func TestStopWhenEmpty(t *testing.T) {
 	case <-time.After(time.Second):
 		a.Fail("timeout waiting for Context.Done()")
 	}
-}
-
-func TestStopWhenAlreadyEmpty(t *testing.T) {
-	a := assert.New(t)
-
-	s := WithContext(context.Background())
-	s.StopOnIdle()
-
-	select {
-	case <-s.Done():
-	//OK
-	case <-time.After(time.Second):
-		a.Fail("timeout waiting for Context.Done()")
-	}
-}
-
-func TestStopWhenEmptyBackground(t *testing.T) {
-	a := assert.New(t)
-	s := Background()
-	s.StopOnIdle()
-	a.False(s.mu.stopOnIdle)
-}
-
-// Verify that a never-used Stopper behaves correctly.
-func TestUnused(t *testing.T) {
-	a := assert.New(t)
-
-	s := WithContext(context.Background())
-	s.Stop(0)
-	select {
-	case <-s.Done():
-	// OK
-	case <-time.After(time.Second):
-		a.Fail("timeout waiting for Context.Done()")
-	}
-	a.ErrorIs(context.Cause(s), ErrStopped)
-	a.Nil(s.Wait())
 }
 
 func TestWith(t *testing.T) {
 	a := assert.New(t)
 
-	s := WithContext(context.Background())
+	s := New()
 
 	type k string
 
-	c1 := context.WithValue(context.Background(), k("foo"), "bar")
-	c2 := context.WithValue(context.Background(), k("baz"), "quux")
+	c1 := context.WithValue(t.Context(), k("foo"), "bar")
+	c2 := context.WithValue(t.Context(), k("baz"), "quux")
 
-	s.With(c1).Go(func(ctx *Context) error {
+	a.NoError(Go(s.WithDelegate(c1), func(ctx Context) error {
 		a.NotSame(s, ctx)
-		a.Same(s.state, ctx.state)
+		a.Same(s.(*impl).st, ctx.(*impl).st)
 		a.Equal("bar", ctx.Value(k("foo")))
 		return nil
-	})
-	s.With(c2).Go(func(ctx *Context) error {
+	}))
+	a.NoError(Go(s.WithDelegate(c2), func(ctx Context) error {
 		a.NotSame(s, ctx)
-		a.Same(s.state, ctx.state)
+		a.Same(s.(*impl).st, ctx.(*impl).st)
 		a.Equal("quux", ctx.Value(k("baz")))
 		return nil
-	})
+	}))
 
-	s.Stop(time.Second)
+	s.Stop(StopGracePeriod(time.Second))
 	a.NoError(s.Wait())
 }
 
-func TestWithBackground(t *testing.T) {
-	a := assert.New(t)
+func TestPanicHandlerError(t *testing.T) {
+	r := require.New(t)
+	s := New()
 
-	bg := Background()
-	ch := make(chan *Context, 1)
+	err := s.Call(
+		func(ctx Context) error {
+			panic(net.ErrClosed)
+		},
+		TaskName("tester"),
+	)
+	r.ErrorContains(err, "tester: recovered: "+net.ErrClosed.Error())
+	r.ErrorIs(err, net.ErrClosed)
 
-	type k string
-	w := bg.With(context.WithValue(bg, k("foo"), "bar"))
-	a.NotSame(bg, w)
-	a.False(w.canStop())
-	a.Equal("bar", w.Value(k("foo")))
-	a.PanicsWithError("cannot call Context.Defer() on a background context", func() {
-		w.Defer(func() {})
-	})
-	w.Go(func(ctx *Context) error {
-		ch <- ctx
-		return errors.New("no effect")
-	})
-
-	select {
-	case <-time.After(30 * time.Second):
-		a.Fail("timeout")
-	case found := <-ch:
-		a.NotSame(Background(), found)
-		a.False(found.canStop())
-	}
+	var recovered *RecoveredError
+	r.ErrorAs(err, &recovered)
+	r.NotZero(len(recovered.Stack))
+	t.Log(recovered.String())
 }
 
-func TestWithInvoker(t *testing.T) {
-	r := assert.New(t)
+func TestPanicHandlerString(t *testing.T) {
+	r := require.New(t)
+	s := New()
+
+	err := s.Call(
+		func(ctx Context) error {
+			panic("boom!")
+		},
+		TaskName("tester"),
+	)
+	r.ErrorContains(err, "tester: recovered: boom!")
+
+	var recovered *RecoveredError
+	r.ErrorAs(err, &recovered)
+	r.NotZero(len(recovered.Stack))
+	t.Log(recovered.String())
+}
+
+func TestWaitInterrupt(t *testing.T) {
+	r := require.New(t)
+	ctx := New()
+
+	block := make(chan struct{})
+	defer close(block)
+	r.NoError(Go(ctx, func() { <-block }))
+
+	stdCtx, cancel := context.WithCancel(ctx)
+	cancel()
+	r.ErrorIs(ctx.WaitCtx(stdCtx), context.Canceled)
+}
+
+func TestWithMiddleware(t *testing.T) {
+	r := require.New(t)
 
 	var called atomic.Bool
-	ctx := WithInvoker(context.Background(), func(fn Func) Func {
-		return func(ctx *Context) error {
-			called.Store(true)
-			return fn(ctx)
-		}
-	})
-	r.NoError(ctx.Call(func(ctx *Context) error { return nil }))
+	ctx := WithContext(t.Context(),
+		WithTaskOptions(TaskMiddleware(
+			func(outer Context) (Context, Invoker) {
+				return outer, func(ctx Context, task Func) error {
+					called.Store(true)
+					return task(ctx)
+				}
+			},
+		)),
+	)
+	r.NoError(ctx.Call(func(ctx Context) error { return nil }))
 	r.True(called.Load())
 
 	called.Store(false)
-	ctx.Go(func(ctx *Context) error { return nil })
-	ctx.Stop(30 * time.Second)
+	r.NoError(ctx.Go(func(ctx Context) error { return nil }))
+	ctx.Stop(StopGracePeriod(30 * time.Second))
 	r.NoError(ctx.Wait())
 	r.True(called.Load())
 }

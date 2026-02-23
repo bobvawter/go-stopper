@@ -1,3 +1,6 @@
+// Copyright 2026 Bob Vawter (bob@vawter.org)
+// SPDX-License-Identifier: Apache-2.0
+
 package stopper
 
 import (
@@ -18,8 +21,8 @@ func TestAdapt(t *testing.T) {
 		Fn(func() error { called = true; return err }),
 		Fn(func(context.Context) { called = true }),
 		Fn(func(context.Context) error { called = true; return err }),
-		Fn(func(*Context) { called = true }),
-		Fn(func(*Context) error { called = true; return err }),
+		Fn(func(Context) { called = true }),
+		Fn(func(Context) error { called = true; return err }),
 	}
 
 	for i, tc := range tcs {
@@ -34,4 +37,15 @@ func TestAdapt(t *testing.T) {
 			r.True(called)
 		})
 	}
+}
+
+func TestNoStopper(t *testing.T) {
+	r := require.New(t)
+	ctx := t.Context()
+	r.ErrorIs(Call(ctx, func() {}), ErrNoStopper)
+	deferred, err := Defer(ctx, func() {})
+	r.False(deferred)
+	r.ErrorIs(err, ErrNoStopper)
+	r.ErrorIs(Go(ctx, func() {}), ErrNoStopper)
+	r.ErrorIs(GoN(ctx, 2, func() {}), ErrNoStopper)
 }

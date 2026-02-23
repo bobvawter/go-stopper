@@ -8,26 +8,31 @@ import (
 	"testing"
 	"time"
 
-	"vawter.tech/stopper"
-	"vawter.tech/stopper/linger"
+	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/linger"
 )
 
-func NewStopperForTest(t *testing.T) *stopper.Context {
+func NewStopperForTest(t *testing.T) stopper.Context {
 	const grace = 5 * time.Second
 
-	// Impose a per-test timout.
-	stdCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Impose a per-test timeout.
+	stdCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	t.Cleanup(cancel)
 
 	// Add tracking for where goroutine tasks are started.
 	rec := linger.NewRecorder(10 /* depth */)
-	ctx := stopper.WithInvoker(stdCtx, rec.Invoke)
+	ctx := stopper.WithContext(stdCtx,
+		stopper.WithGracePeriod(grace),
+		stopper.WithTaskOptions(
+			stopper.TaskMiddleware(rec.Middleware),
+		),
+	)
 
 	// Register a cleanup, which could be a deferred function, that will stop
 	// the context, wait for all tasks to exit, and then verify that there are
 	// no lingering goroutines associated with the context.
 	t.Cleanup(func() {
-		ctx.Stop(grace)
+		ctx.Stop() // Stop returns immediately.
 		if err := ctx.Wait(); err != nil {
 			t.Errorf("task returned an error: %v", err)
 		}
