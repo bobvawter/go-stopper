@@ -45,8 +45,9 @@ func ForEach[T any](
 		// Report errors if the context is stopped during startup.
 		s.AddError(s.Go(func(ctx stopper.Context) error {
 			for {
-				if ctx.IsStopping() {
-					return stopper.ErrStopped
+				// Just respond to hard stop.
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 
 				// Collect the next value to process.
@@ -96,8 +97,9 @@ func ForEach2[K, V any](
 		// Report errors if the context is stopped during startup.
 		s.AddError(s.Go(func(ctx stopper.Context) error {
 			for {
-				if ctx.IsStopping() {
-					return stopper.ErrStopped
+				// Just respond to hard stop.
+				if err := ctx.Err(); err != nil {
+					return err
 				}
 
 				// Collect the next value to process.
