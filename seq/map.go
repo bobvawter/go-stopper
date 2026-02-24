@@ -50,8 +50,10 @@ func Map[T, R any](
 		s := stopper.WithContext(ctx, opts...)
 		defer s.Stop()
 
+		earlyBreak := make(chan struct{})
+
 		results := make(chan (<-chan result[R]), numWorkers)
-		s.Defer(func(ctx stopper.Context) error {
+		s.Defer(func(_ stopper.Context) error {
 			close(results)
 			return nil
 		})
@@ -60,13 +62,21 @@ func Map[T, R any](
 			// Report errors if the context is stopped during startup.
 			s.AddError(s.Go(func(ctx stopper.Context) error {
 				for {
-					if ctx.IsStopping() {
-						return stopper.ErrStopped
+					// Just respond to hard stop.
+					if err := ctx.Err(); err != nil {
+						return err
 					}
 					retChan := make(chan result[R], 1)
 
 					// Collect the next value to process. Only enqueue a
-					// result channel if there's an item to process.
+					// result channel if there's an item to process. We
+					// need to enqueue the return channel while holding
+					// the mutex to guarantee ordering. If the yield
+					// function returns false, we might block
+					// indefinitely while writing to the results
+					// channel. As such, it's necessary to have an extra
+					// channel to distinguish an early break from a slow
+					// consumer.
 					nextMu.Lock()
 					count := idx
 					idx++
@@ -74,11 +84,10 @@ func Map[T, R any](
 					if ok {
 						select {
 						case results <- retChan:
-						case <-ctx.Stopping():
-							// Just unblock. We might do some
-							// unnecessary work for an invisible result
-							// value, but this should be a rare case to
-							// get stopped here.
+						case <-earlyBreak:
+							ok = false
+						case <-ctx.Done():
+							ok = false
 						}
 					}
 					nextMu.Unlock()
@@ -100,7 +109,9 @@ func Map[T, R any](
 		}
 		s.Stop(stopper.StopOnIdle())
 
-		yieldOrdered(s, results, yield)
+		if !yieldOrdered(s, results, yield) {
+			close(earlyBreak)
+		}
 	}
 }
 
@@ -125,8 +136,10 @@ func Map2[K, V, R any](
 		s := stopper.WithContext(ctx, opts...)
 		defer s.Stop()
 
+		earlyBreak := make(chan struct{})
+
 		results := make(chan (<-chan result[R]), numWorkers)
-		s.Defer(func(ctx stopper.Context) error {
+		s.Defer(func(_ stopper.Context) error {
 			close(results)
 			return nil
 		})
@@ -135,13 +148,21 @@ func Map2[K, V, R any](
 			// Report errors if the context is stopped during startup.
 			s.AddError(s.Go(func(ctx stopper.Context) error {
 				for {
-					if ctx.IsStopping() {
-						return stopper.ErrStopped
+					// Just respond to hard stop.
+					if err := ctx.Err(); err != nil {
+						return err
 					}
 					retChan := make(chan result[R], 1)
 
 					// Collect the next value to process. Only enqueue a
-					// result channel if there's an item to process.
+					// result channel if there's an item to process. We
+					// need to enqueue the return channel while holding
+					// the mutex to guarantee ordering. If the yield
+					// function returns false, we might block
+					// indefinitely while writing to the results
+					// channel. As such, it's necessary to have an extra
+					// channel to distinguish an early break from a slow
+					// consumer.
 					nextMu.Lock()
 					count := idx
 					idx++
@@ -149,11 +170,10 @@ func Map2[K, V, R any](
 					if ok {
 						select {
 						case results <- retChan:
-						case <-ctx.Stopping():
-							// Just unblock. We might do some
-							// unnecessary work for an invisible result
-							// value, but this should be a rare case to
-							// get stopped here.
+						case <-earlyBreak:
+							ok = false
+						case <-ctx.Done():
+							ok = false
 						}
 					}
 					nextMu.Unlock()
@@ -173,10 +193,11 @@ func Map2[K, V, R any](
 				}
 			}))
 		}
-
 		s.Stop(stopper.StopOnIdle())
 
-		yieldOrdered(s, results, yield)
+		if !yieldOrdered(s, results, yield) {
+			close(earlyBreak)
+		}
 	}
 }
 
@@ -214,8 +235,10 @@ func MapUnordered[T, R any](
 		s := stopper.WithContext(ctx, opts...)
 		defer s.Stop()
 
+		earlyBreak := make(chan struct{})
+
 		results := make(chan result[R], numWorkers)
-		s.Defer(func(ctx stopper.Context) error {
+		s.Defer(func(_ stopper.Context) error {
 			close(results)
 			return nil
 		})
@@ -224,8 +247,9 @@ func MapUnordered[T, R any](
 			// Report errors if the context is stopped during startup.
 			s.AddError(s.Go(func(ctx stopper.Context) error {
 				for {
-					if ctx.IsStopping() {
-						return stopper.ErrStopped
+					// Just respond to hard stop.
+					if err := ctx.Err(); err != nil {
+						return err
 					}
 
 					// Collect the next value to process.
@@ -244,12 +268,13 @@ func MapUnordered[T, R any](
 						return fn(ctx, count, item)
 					})
 					select {
-
 					case results <- result[R]{
 						Err:    err,
 						Result: ret,
 					}:
-					case <-ctx.Stopping():
+					case <-earlyBreak:
+						return nil
+					case <-ctx.Done():
 						// Just unblock, we'll return an error above.
 					}
 				}
@@ -257,7 +282,9 @@ func MapUnordered[T, R any](
 		}
 		s.Stop(stopper.StopOnIdle())
 
-		yieldUnordered(s, results, yield)
+		if !yieldUnordered(s, results, yield) {
+			close(earlyBreak)
+		}
 	}
 }
 
@@ -282,8 +309,10 @@ func MapUnordered2[K, V, R any](
 		s := stopper.WithContext(ctx, opts...)
 		defer s.Stop()
 
+		earlyBreak := make(chan struct{})
+
 		results := make(chan result[R], numWorkers)
-		s.Defer(func(ctx stopper.Context) error {
+		s.Defer(func(_ stopper.Context) error {
 			close(results)
 			return nil
 		})
@@ -292,8 +321,9 @@ func MapUnordered2[K, V, R any](
 			// Report errors if the context is stopped during startup.
 			s.AddError(s.Go(func(ctx stopper.Context) error {
 				for {
-					if ctx.IsStopping() {
-						return stopper.ErrStopped
+					// Just respond to hard stop.
+					if err := ctx.Err(); err != nil {
+						return err
 					}
 
 					// Collect the next value to process.
@@ -311,13 +341,14 @@ func MapUnordered2[K, V, R any](
 					ret, err := safe.CallRE(func() (R, error) {
 						return fn(ctx, count, k, v)
 					})
-
 					select {
 					case results <- result[R]{
 						Err:    err,
 						Result: ret,
 					}:
-					case <-ctx.Stopping():
+					case <-earlyBreak:
+						return nil
+					case <-ctx.Done():
 						// Just unblock, we'll return an error above.
 					}
 				}
@@ -325,7 +356,9 @@ func MapUnordered2[K, V, R any](
 		}
 		s.Stop(stopper.StopOnIdle())
 
-		yieldUnordered(s, results, yield)
+		if !yieldUnordered(s, results, yield) {
+			close(earlyBreak)
+		}
 	}
 }
 
@@ -336,14 +369,14 @@ func yieldOrdered[R any](
 	s stopper.Context,
 	results <-chan (<-chan result[R]),
 	yield func(R, error) bool,
-) {
+) bool {
 	// This channel is guaranteed to be closed by a Defer() function.
 	for resultCh := range results {
 		// The worker function wraps the user-provided code in a panic
 		// handler, so we're guaranteed to see a value on the channel.
 		result := <-resultCh
 		if !yield(result.Result, result.Err) {
-			return
+			return false
 		}
 	}
 
@@ -352,6 +385,7 @@ func yieldOrdered[R any](
 	if err := s.Wait(); err != nil {
 		yield(*new(R), err)
 	}
+	return true
 }
 
 // yieldUnordered drains the results channel into the yield function. An
@@ -361,11 +395,11 @@ func yieldUnordered[R any](
 	s stopper.Context,
 	results <-chan result[R],
 	yield func(R, error) bool,
-) {
+) bool {
 	// This channel is guaranteed to be closed by a Defer() function.
 	for result := range results {
 		if !yield(result.Result, result.Err) {
-			return
+			return false
 		}
 	}
 
@@ -374,4 +408,5 @@ func yieldUnordered[R any](
 	if err := s.Wait(); err != nil {
 		yield(*new(R), err)
 	}
+	return true
 }

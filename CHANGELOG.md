@@ -1,6 +1,9 @@
 # Changelog
 
-## v2.0.0
+## v2.0.0-alpha.next
+  * Update `seq` package iterators to only cancel on hard-stop.
+
+## v2.0.0-alpha.1
   * Complete API overhaul. See the [migration guide](doc/migration.md)
     for a detailed list of changes from v1.
 
