@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -144,6 +145,24 @@ func TestChainStopper(t *testing.T) {
 	a.Zero(child.Len())
 }
 
+func TestChildOfStoppedParent(t *testing.T) {
+	r := require.New(t)
+	parent := New()
+	parent.Stop()
+	r.NoError(parent.Wait())
+
+	child := WithContext(parent)
+	r.True(child.IsStopping())
+	select {
+	case <-child.Done():
+	// OK
+	default:
+		r.Fail("child of stopped parent should already be done")
+	}
+	r.ErrorIs(child.Err(), context.Canceled)
+	r.ErrorIs(context.Cause(child), ErrStopped)
+}
+
 func TestConfigInherit(t *testing.T) {
 	r := require.New(t)
 
@@ -218,6 +237,31 @@ func TestFromBackground(t *testing.T) {
 func TestIsStoppingOther(t *testing.T) {
 	r := require.New(t)
 	r.False(IsStopping(t.Context()))
+}
+
+func TestNoGoroutinesOnIdle(t *testing.T) {
+	r := require.New(t)
+
+	// Allow any background goroutines to settle before we take a baseline.
+	runtime.Gosched()
+	before := runtime.NumGoroutine()
+
+	s := New()
+
+	// Make sure that creating a stopper doesn't increase the count.
+	runtime.Gosched()
+	r.Equal(runtime.NumGoroutine(), before)
+
+	// We do expect to see another goroutine now.
+	r.NoError(Go(s, func() {
+		<-s.Stopping()
+	}))
+	r.Greater(runtime.NumGoroutine(), before)
+
+	// The goroutine should terminate before Wait() returns.
+	s.Stop()
+	r.NoError(s.Wait())
+	r.Equal(runtime.NumGoroutine(), before)
 }
 
 func TestStopper(t *testing.T) {

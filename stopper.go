@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/trace"
+	"sync/atomic"
 	"time"
 
 	"vawter.tech/stopper/v2/internal/safe"
@@ -234,7 +235,20 @@ func WithContext(ctx context.Context, opts ...ConfigOption) Context {
 
 	ctx, traceTask := trace.NewTask(ctx, cfg.name)
 	ctx, cancel := context.WithCancelCause(ctx)
+
+	var afterCleanup atomic.Pointer[func() bool]
+	var parentCleanup atomic.Pointer[func()]
 	cleanup := func(err error) {
+		if ptr := afterCleanup.Load(); ptr != nil {
+			if fn := *ptr; fn != nil {
+				fn()
+			}
+		}
+		if ptr := parentCleanup.Load(); ptr != nil {
+			if fn := *ptr; fn != nil {
+				fn()
+			}
+		}
 		cancel(err)
 		traceTask.End()
 	}
@@ -245,20 +259,16 @@ func WithContext(ctx context.Context, opts ...ConfigOption) Context {
 	}
 
 	// Propagate a parent stop or context cancellation into a Stop call
-	// to ensure that all notification channels are closed. This
-	// goroutine is left untracked since it doesn't represent
-	// user-provided work.
-	go func() {
-		if parent == nil {
-			<-s.Done()
-		} else {
-			select {
-			case <-parent.Stopping():
-			case <-s.Done():
-			}
-		}
-		s.Stop()
-	}()
+	// to ensure that all notification channels are closed. Atomic
+	// pointers are necessary since context.AfterFunc() will fire in a
+	// separate goroutine.
+	if parent != nil {
+		parentCleanupFn := parent.AddStopHook(func() { s.Stop() })
+		parentCleanup.Store(&parentCleanupFn)
+	}
+	afterCleanupFn := context.AfterFunc(ctx, func() { s.Stop() })
+	afterCleanup.Store(&afterCleanupFn)
+
 	return s
 }
 
