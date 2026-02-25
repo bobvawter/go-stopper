@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNew(t *testing.T) {
@@ -459,6 +460,44 @@ func TestErrStopped(t *testing.T) {
 func TestErrGracePeriodExpired(t *testing.T) {
 	a := assert.New(t)
 	a.EqualError(ErrGracePeriodExpired, "grace period expired")
+}
+
+func TestAddStopHookCalledOnStop(t *testing.T) {
+	r := require.New(t)
+	s := New(func(error) {}, nil, nil)
+	called := false
+	s.AddStopHook(func() { called = true })
+	r.False(called)
+	s.softStopLocked(time.Duration(0))
+	r.True(called)
+}
+
+func TestAddStopHookCalledImmediatelyWhenAlreadyStopping(t *testing.T) {
+	r := require.New(t)
+	s := New(func(error) {}, nil, nil)
+	s.softStopLocked(time.Duration(0))
+	called := false
+	s.AddStopHook(func() { called = true })() // Also check no-op cancel
+	r.True(called)
+}
+
+func TestAddStopHookCancelRemovesHook(t *testing.T) {
+	r := require.New(t)
+	s := New(func(error) {}, nil, nil)
+	called := false
+	cancel := s.AddStopHook(func() { called = true })
+	cancel()
+	s.softStopLocked(time.Duration(0))
+	r.False(called)
+}
+
+func TestAddStopHookCancelSafeAfterStop(t *testing.T) {
+	r := require.New(t)
+	s := New(func(error) {}, nil, nil)
+	cancel := s.AddStopHook(func() {})
+	s.softStopLocked(time.Duration(0))
+	// Should not panic or deadlock.
+	r.NotPanics(cancel)
 }
 
 func TestAddDeferredWhileStoppingWithActiveCount(t *testing.T) {

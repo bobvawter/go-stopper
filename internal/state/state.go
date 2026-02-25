@@ -33,8 +33,10 @@ type State struct {
 		deferred     []func() error // Invoked via hardStopLocked.
 		errs         []error
 		graceTimer   *time.Timer // Created in Stop(), cleared in hardStopLocked.
-		stopping     bool
+		stopHooks    map[uint64]func()
+		stopHooksID  uint64
 		stopOnIdle   *time.Duration // The value is a grace period.
+		stopping     bool
 	}
 }
 
@@ -74,6 +76,41 @@ func (s *State) addDeferred(fn func() error) (deferred bool) {
 	return true
 }
 
+// AddStopHook registers an internal callback for propagating stop
+// calls. These hooks will be called synchronously from within
+// softStopLocked immediately after the stopping channel has been
+// closed. They must therefore not cause any reentrant behavior on the
+// State context to which they're registered. The callback will be
+// executed immediately if the state is already stopping.
+func (s *State) AddStopHook(fn func()) (cancel func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mu.stopping {
+		fn()
+		return func() {}
+	}
+	if s.mu.stopHooks == nil {
+		s.mu.stopHooks = make(map[uint64]func())
+	}
+	id := s.mu.stopHooksID
+	s.mu.stopHooksID++
+	s.mu.stopHooks[id] = fn
+	return func() {
+		// Disarm the cancel function if the state is already stopping.
+		select {
+		case <-s.stopping:
+			return
+		default:
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.mu.stopHooks != nil {
+			delete(s.mu.stopHooks, id)
+		}
+	}
+}
+
 // Apply is used to maintain the count of started goroutines. It returns
 // true if the delta was applied.
 func (s *State) Apply(delta int) bool {
@@ -91,8 +128,8 @@ func (s *State) Apply(delta int) bool {
 
 	// Ensure that nested jobs prolong the lifetime of the parent
 	// context to prevent premature cancellation. Verify that the parent
-	// accepted the delta in case it was just stopped, but our helper
-	// goroutine hasn't yet called Stop on this instance.
+	// accepted the delta in case it was just stopped, but our
+	// stop-propagation callback hasn't fired yet.
 	//
 	// Note that the call to parent.Apply() is safe only because there
 	// are currently no cases where a parent locks a child.
@@ -269,6 +306,14 @@ func (s *State) softStopLocked(gracePeriod time.Duration) (deferred []func() err
 	}
 	s.mu.stopping = true
 	close(s.stopping)
+
+	// These hooks do not call user-provided code.
+	if hooks := s.mu.stopHooks; hooks != nil {
+		for _, fn := range hooks {
+			fn()
+		}
+		s.mu.stopHooks = nil
+	}
 
 	// We may still want to call into hardStopLocked(), which is a one-shot,
 	if s.mu.count == 0 {
