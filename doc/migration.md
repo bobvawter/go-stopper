@@ -5,6 +5,82 @@ of the `stopper` package. The module path changed from
 `vawter.tech/stopper` to `vawter.tech/stopper/v2`, so both versions
 can coexist during a gradual migration.
 
+## Compatibility module
+
+If a full migration is not practical right away, the `compat` module
+re-implements the entire v1 API on top of v2. Existing code continues
+to compile and run without source changes — only a `replace` directive
+in `go.mod` is needed.
+
+### Setup
+
+Add the `compat` module as a replacement for the v1 module path:
+
+```
+require vawter.tech/stopper v1.2.0
+
+replace vawter.tech/stopper v1.2.0 => vawter.tech/stopper/v2/compat v0.1.0
+```
+
+For local development against an unpublished checkout, use a
+filesystem path instead:
+
+```
+replace vawter.tech/stopper v1.2.0 => /path/to/go-stopper/compat
+```
+
+Once the directive is in place, all `import "vawter.tech/stopper"`
+statements resolve to the compat wrapper, which delegates to v2
+internally.
+
+### What stays the same
+
+- All exported types, functions, variables, and type aliases
+  (`*Context`, `Func`, `Invoker`, `Adaptable`, `Fn`, `Background`,
+  `From`, `WithContext`, `WithInvoker`, `Harden`, `HardenFrom`,
+  `IsStopping`, `StopOnReceive`, `ErrStopped`, `ErrGracePeriodExpired`)
+  are present with their original signatures.
+- `Stop(0)` means "wait indefinitely," matching v1 semantics.
+- `Background()` returns a singleton that cannot be stopped.
+- `Defer` on a background context panics with an `error` value,
+  matching v1.
+- The `linger` sub-package is included.
+
+### Known behavioral differences
+
+1. **`From()` pointer identity** — v1's `From` returns the same
+   `*Context` pointer that was placed in the context chain. The compat
+   wrapper allocates a new `*Context` struct each time, so pointer
+   comparisons via `==` may differ. Use `From` only to obtain a
+   usable `*Context`, not for identity checks.
+
+2. **`Harden` / `StoppingContext` Err value** — v1's `Harden` returns
+   a context whose `Err()` yields plain `ErrStopped`. The compat
+   layer delegates to v2's `StoppingContext`, which returns
+   `errors.Join(context.Canceled, ErrStopped)`. Code that checks
+   `err == ErrStopped` will break; switch to `errors.Is(err, ErrStopped)`,
+   which works with both v1 and compat.
+
+3. **`linger` callers offset** — the compat wrapper adds one extra
+   stack frame, so the internal `callersOffset` constant is `4`
+   instead of `3`. This is transparent to callers of the `linger`
+   API.
+
+### When to prefer a full migration
+
+The compat module is intended as a bridge, not a permanent solution.
+Consider a full migration when:
+
+- You want access to v2-only features (`Call`, `TaskMiddleware`,
+  `StopError`, `limit` package, `WaitCtx`, etc.).
+- You need `Context` as an interface (e.g. for mocking in tests).
+- You want to eliminate the thin wrapper overhead (one extra closure
+  per `Go`/`Call`/`Defer`).
+
+Every symbol in the compat module carries a `Deprecated:` comment
+pointing to its v2 replacement, so IDEs will guide the migration
+incrementally.
+
 ## Import path
 
 ```diff
@@ -115,7 +191,7 @@ a stopper.
 +}
 ```
 
-### Context.Call (new)
+### Context.Call
 
 `Call` executes a `Func` in the **current** goroutine while still
 tracking its lifecycle. This is useful inside HTTP handlers or other
@@ -251,85 +327,6 @@ The new `limit` sub-package provides ready-made middleware:
 |----------------------|--------------------------------------------|
 | `WithMaxConcurrency` | Cap the number of concurrent tasks.        |
 | `WithMaxRate`        | Token-bucket rate limiting via `x/time`.   |
-
-## Compatibility module
-
-If a full migration is not practical right away, the `compat` module
-re-implements the entire v1 API on top of v2. Existing code continues
-to compile and run without source changes — only a `replace` directive
-in `go.mod` is needed.
-
-### Setup
-
-Add the `compat` module as a replacement for the v1 module path:
-
-```
-require vawter.tech/stopper v1.2.0
-
-replace vawter.tech/stopper v1.2.0 => vawter.tech/stopper/v2/compat v2.x.x
-```
-
-For local development against an unpublished checkout, use a
-filesystem path instead:
-
-```
-replace vawter.tech/stopper v1.2.0 => /path/to/go-stopper/compat
-```
-
-Once the directive is in place, all `import "vawter.tech/stopper"`
-statements resolve to the compat wrapper, which delegates to v2
-internally.
-
-### What stays the same
-
-- All exported types, functions, variables, and type aliases
-  (`*Context`, `Func`, `Invoker`, `Adaptable`, `Fn`, `Background`,
-  `From`, `WithContext`, `WithInvoker`, `Harden`, `HardenFrom`,
-  `IsStopping`, `StopOnReceive`, `ErrStopped`, `ErrGracePeriodExpired`)
-  are present with their original signatures.
-- `Stop(0)` means "wait indefinitely," matching v1 semantics.
-- `Background()` returns a singleton that cannot be stopped.
-- `Defer` on a background context panics with an `error` value,
-  matching v1.
-- The `linger` sub-package is included.
-
-### Known behavioral differences
-
-1. **`From()` pointer identity** — v1's `From` returns the same
-   `*Context` pointer that was placed in the context chain. The compat
-   wrapper allocates a new `*Context` struct each time, so pointer
-   comparisons via `==` may differ. Use `From` only to obtain a
-   usable `*Context`, not for identity checks.
-
-2. **`Harden` / `StoppingContext` Err value** — v1's `Harden` returns
-   a context whose `Err()` yields plain `ErrStopped`. The compat
-   layer delegates to v2's `StoppingContext`, which returns
-   `errors.Join(context.Canceled, ErrStopped)`. Code that checks
-   `err == ErrStopped` will break; switch to `errors.Is(err, ErrStopped)`,
-   which works with both v1 and compat.
-
-3. **`linger` callers offset** — the compat wrapper adds one extra
-   stack frame, so the internal `callersOffset` constant is `4`
-   instead of `3`. This is transparent to callers of the `linger`
-   API.
-
-### When to prefer a full migration
-
-The compat module is intended as a bridge, not a permanent solution.
-Consider a full migration when:
-
-- You want access to v2-only features (`Call`, `TaskMiddleware`,
-  `StopError`, `limit` package, `WaitCtx`, etc.).
-- You need `Context` as an interface (e.g. for mocking in tests).
-- You want to eliminate the thin wrapper overhead (one extra closure
-  per `Go`/`Call`/`Defer`).
-
-Every symbol in the compat module carries a `Deprecated:` comment
-pointing to its v2 replacement, so IDEs will guide the migration
-incrementally.
-
-See [compat.md](compat.md) for the full feasibility analysis and
-validation report.
 
 ## Quick reference
 
