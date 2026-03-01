@@ -9,7 +9,7 @@
 //
 //	require vawter.tech/stopper v1.2.0
 //
-//	replace vawter.tech/stopper v1.2.0 => vawter.tech/stopper/v2/compat v2.x.x
+//	replace vawter.tech/stopper v1.2.0 => vawter.tech/stopper/v2/compat v0.1.0
 //
 // For local development against an unpublished checkout, use a
 // filesystem path instead:
