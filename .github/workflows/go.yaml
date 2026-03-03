@@ -23,7 +23,8 @@ jobs:
       - name: Preflight script
         run: $GITHUB_WORKSPACE/preflight.sh
 
-      - name: Upload coverage reports to Codecov
+      - name: Upload core coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:
+          fail_ci_if_error: true
           token: ${{ secrets.CODECOV_TOKEN }}
