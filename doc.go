@@ -1,8 +1,8 @@
 // Copyright 2026 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
-// Package stopper provides graceful lifecycle management for
-// long-running tasks in a Go program.
+// Package stopper brings structured concurrency and graceful lifecycle
+// management to long-running tasks in a Go program.
 //
 // A stopper [Context] extends the standard library [context.Context]
 // with a two-phase shutdown model:

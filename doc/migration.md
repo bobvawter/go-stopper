@@ -72,7 +72,7 @@ The compat module is intended as a bridge, not a permanent solution.
 Consider a full migration when:
 
 - You want access to v2-only features (`Call`, `TaskMiddleware`,
-  `StopError`, `limit` package, `WaitCtx`, etc.).
+  `limit` package, `WaitCtx`, etc.).
 - You need `Context` as an interface (e.g. for mocking in tests).
 - You want to eliminate the thin wrapper overhead (one extra closure
   per `Go`/`Call`/`Defer`).
@@ -129,12 +129,13 @@ functional options:
 
 `New` and `WithContext` accept `ConfigOption` values:
 
-| Option              | Purpose                                      |
-|---------------------|----------------------------------------------|
-| `WithGracePeriod`   | Default grace period for `Stop()` calls.     |
-| `WithName`          | Assign a debug name (visible in `String()`). |
-| `WithNoInherit`     | Ignore parent task configuration.            |
-| `WithTaskOptions`   | Attach default `TaskOption` values.          |
+| Option              | Purpose                                              |
+|---------------------|------------------------------------------------------|
+| `WithGracePeriod`   | Default grace period for `Stop()` calls.             |
+| `WithName`          | Assign a debug name (visible in `String()`).         |
+| `WithNoInherit`     | Ignore parent task configuration.                    |
+| `WithNoTaskInfo`    | Disable `TaskInfo` attachment when not needed.       |
+| `WithTaskOptions`   | Attach default `TaskOption` values.                  |
 
 ## Stopping
 
@@ -158,7 +159,6 @@ Additional `StopOption` values:
 |--------------------|-------------------------------------------|
 | `StopGracePeriod`  | Override the default grace period.        |
 | `StopOnIdle`       | Stop automatically when all tasks finish. |
-| `StopError`        | Inject an error into the `Wait()` result. |
 
 ## Running tasks
 
@@ -239,9 +239,9 @@ constructor have been replaced by a two-phase `Middleware` /
 -})
 +ctx := stopper.New(
 +    stopper.WithTaskOptions(
-+        stopper.TaskMiddleware(func(outer stopper.Context) stopper.Invoker {
++        stopper.TaskMiddleware(func(outer stopper.Context) (stopper.Context, stopper.Invoker) {
 +            // setup phase (runs in the caller's goroutine)
-+            return func(ctx stopper.Context, task stopper.Func) error {
++            return outer, func(ctx stopper.Context, task stopper.Func) error {
 +                // invocation phase
 +                return task(ctx)
 +            }
@@ -258,10 +258,10 @@ Built-in `Invoker` helpers: `InvokerCall` (pass-through),
 v1 had no configurable error handling — the first error from `Go`
 would be returned by `Wait`. v2 introduces the `ErrorHandler` type:
 
-| Handler            | Behavior                                     |
-|--------------------|----------------------------------------------|
-| `ErrHandlerStop`   | Stop the context on the first error (default). |
-| `ErrHandlerRecord` | Record errors without stopping.              |
+| Handler               | Behavior                                       |
+|-----------------------|------------------------------------------------|
+| `ErrorHandlerStop`    | Stop the context on the first error (default). |
+| `ErrorHandlerRecord`  | Record errors without stopping.                |
 
 Attach via `TaskErrHandler` as a `TaskOption`.
 

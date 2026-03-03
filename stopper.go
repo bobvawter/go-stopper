@@ -162,7 +162,7 @@ type Context interface {
 	// Wait will block until Stop has been called and all associated
 	// tasks have exited or the parent context has been canceled. This
 	// method will return errors from any of the tasks passed to Go or
-	// via [StopError].
+	// via [Context.AddError].
 	Wait() error
 
 	// WaitCtx is an interruptable version of [Context.Wait]. If the
