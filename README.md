@@ -7,12 +7,12 @@
 go get vawter.tech/stopper/v2
 ```
 
-Package `stopper` provides graceful lifecycle management for long-running
-tasks in a Go program. A stopper `Context` extends the standard library
-`context.Context` with a two-phase shutdown model — a soft-stop signal
-for graceful draining followed by a hard cancel after a configurable
-grace period — and includes task-launching APIs similar to
-[`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
+Package `stopper` brings structured concurrency and graceful lifecycle
+management to long-running tasks in a Go program. A stopper `Context`
+extends the standard library `context.Context` with a two-phase shutdown
+model — a soft-stop signal for graceful draining followed by a hard
+cancel after a configurable grace period — and includes task-launching
+APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
 [`ErrGroup`](https://pkg.go.dev/golang.org/x/sync/errgroup).
 
 ## Features
@@ -120,6 +120,7 @@ demonstrate a variety of patterns:
 | Stop on idle | [`ExampleContext_stopOnIdle`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Context-StopOnIdle) |
 | Middleware | [`ExampleMiddleware`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Middleware) |
 | `runtime/trace` integration | [`ExampleContext_tracing`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Context-Tracing) |
+| Task observability metadata | [`ExampleTaskInfo`](https://pkg.go.dev/vawter.tech/stopper/v2#example-TaskInfo) |
 | Retry with exponential backoff | [`ExampleBackoff`](https://pkg.go.dev/vawter.tech/stopper/v2/retry#example-Backoff) |
 | Concurrency / rate limiting | [`Example`](https://pkg.go.dev/vawter.tech/stopper/v2/limit#example-package) |
 | Detecting lingering tasks | [`ExampleRecorder`](https://pkg.go.dev/vawter.tech/stopper/v2/linger#example-Recorder) |
