@@ -167,7 +167,7 @@ type Context interface {
 
 	// WaitCtx is an interruptable version of [Context.Wait]. If the
 	// argument's Done() channel is closed, the argument's Err()
-	// value will be returned.
+	// value will be joined with any errors accumulated by the stopper.
 	WaitCtx(ctx context.Context) error
 
 	// WithDelegate returns a Context that is otherwise equivalent to
@@ -376,7 +376,8 @@ func (c *impl) WaitCtx(ctx context.Context) error {
 	select {
 	case <-c.Done():
 	case <-ctx.Done():
-		return ctx.Err()
+		// Errors() returns a cloned slice.
+		return errors.Join(append(c.st.Errors(), ctx.Err())...)
 	}
 
 	return errors.Join(c.st.Errors()...)
