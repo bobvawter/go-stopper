@@ -3,6 +3,7 @@
 ## v2.0.0-alpha.next
   * Update `seq` package iterators to only cancel on hard-stop.
   * Stop child processes synchronously if added to a stopped parent.
+  * `Context.WaitCtx()` returns the delegate's `Err()` joined with any errors accumulated by the stopper.
 
 ## v2.0.0-alpha.1
   * Complete API overhaul. See the [migration guide](doc/migration.md)

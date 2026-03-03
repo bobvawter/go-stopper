@@ -413,9 +413,13 @@ func TestWaitInterrupt(t *testing.T) {
 	defer close(block)
 	r.NoError(Go(ctx, func() { <-block }))
 
+	otherErr := errors.New("boom")
+	ctx.AddError(otherErr)
+
 	stdCtx, cancel := context.WithCancel(ctx)
 	cancel()
 	r.ErrorIs(ctx.WaitCtx(stdCtx), context.Canceled)
+	r.ErrorIs(ctx.WaitCtx(stdCtx), otherErr)
 }
 
 func TestWithMiddleware(t *testing.T) {
