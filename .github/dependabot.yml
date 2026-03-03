@@ -1,0 +1,9 @@
+version: 2
+updates:
+  - directories:
+      - /
+      - /compat
+    open-pull-requests-limit: 0
+    package-ecosystem: gomod
+    schedule:
+      interval: weekly
