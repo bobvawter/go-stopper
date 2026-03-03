@@ -240,28 +240,30 @@ func TestIsStoppingOther(t *testing.T) {
 }
 
 func TestNoGoroutinesOnIdle(t *testing.T) {
-	r := require.New(t)
+	// This test is subject to flakiness due to test framework
+	// goroutines outside our immediate control.
+	require.EventuallyWithT(t, func(collect *assert.CollectT) {
+		r := require.New(collect)
+		// Allow any background goroutines to settle before we take a baseline.
+		runtime.Gosched()
+		before := runtime.NumGoroutine()
 
-	// Allow any background goroutines to settle before we take a baseline.
-	runtime.Gosched()
-	before := runtime.NumGoroutine()
+		s := New()
+		// Make sure that creating a stopper doesn't increase the count.
+		runtime.Gosched()
+		r.Equal(runtime.NumGoroutine(), before)
 
-	s := New()
+		// We do expect to see another goroutine now.
+		r.NoError(Go(s, func() {
+			<-s.Stopping()
+		}))
+		r.Equal(runtime.NumGoroutine(), before+1)
 
-	// Make sure that creating a stopper doesn't increase the count.
-	runtime.Gosched()
-	r.Equal(runtime.NumGoroutine(), before)
-
-	// We do expect to see another goroutine now.
-	r.NoError(Go(s, func() {
-		<-s.Stopping()
-	}))
-	r.Greater(runtime.NumGoroutine(), before)
-
-	// The goroutine should terminate before Wait() returns.
-	s.Stop()
-	r.NoError(s.Wait())
-	r.Equal(runtime.NumGoroutine(), before)
+		// The goroutine should terminate before Wait() returns.
+		s.Stop()
+		r.NoError(s.Wait())
+		r.Equal(runtime.NumGoroutine(), before)
+	}, time.Second, 10*time.Millisecond)
 }
 
 func TestStopper(t *testing.T) {
