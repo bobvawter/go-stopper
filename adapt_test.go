@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -48,4 +49,24 @@ func TestNoStopper(t *testing.T) {
 	r.ErrorIs(err, ErrNoStopper)
 	r.ErrorIs(Go(ctx, func() {}), ErrNoStopper)
 	r.ErrorIs(GoN(ctx, 2, func() {}), ErrNoStopper)
+}
+
+func TestGoN(t *testing.T) {
+	r := require.New(t)
+	s := WithContext(t.Context())
+	defer s.Stop()
+
+	var count atomic.Int32
+	hitCount := make(chan struct{})
+	r.NoError(GoN(s, 4, func(ctx Context) {
+		if count.Add(1) == 4 {
+			close(hitCount)
+		}
+	}))
+	select {
+	case <-s.Done():
+		r.NoError(s.Err())
+	case <-hitCount:
+		//OK
+	}
 }
