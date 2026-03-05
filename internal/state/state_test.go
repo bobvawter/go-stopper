@@ -5,8 +5,10 @@ package state
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -85,44 +87,22 @@ func TestApplyOverReleasePanics(t *testing.T) {
 }
 
 func TestApplyTriggersStopOnIdle(t *testing.T) {
-	a := assert.New(t)
+	synctest.Test(t, func(t *testing.T) {
+		r := require.New(t)
 
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
+		cancelErr := make(chan error, 1)
+		s := New(func(err error) { cancelErr <- err }, nil, nil)
 
-	a.True(s.Apply(1))
-	s.StopOnIdle(0)
-	// Not yet idle, so not canceled.
-	a.True(s.IsStopOnIdle())
+		r.True(s.Apply(1))
+		s.StopOnIdle(time.Hour)
+		// Not yet idle, so not canceled.
+		r.True(s.IsStopOnIdle())
 
-	a.True(s.Apply(-1))
+		r.True(s.Apply(-1))
 
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrStopped)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for cancel")
-	}
-}
-
-func TestApplyCancelsWhenStoppingAndCountReachesZero(t *testing.T) {
-	a := assert.New(t)
-
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-	a.True(s.Apply(1))
-	s.Stop(time.Hour)
-
-	// Decrement to zero should trigger cancel.
-	a.True(s.Apply(-1))
-
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrStopped)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for cancel")
-	}
+		err := <-cancelErr
+		r.ErrorIs(err, ErrStopped)
+	})
 }
 
 func TestAddErrors(t *testing.T) {
@@ -188,14 +168,15 @@ func TestAddDeferredRunsInReverseOrder(t *testing.T) {
 	a := assert.New(t)
 
 	var order []int
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
+	s := New(func(error) {}, nil, nil)
 
 	a.True(s.AddDeferred(func() error { order = append(order, 1); return nil }))
 	a.True(s.AddDeferred(func() error { order = append(order, 2); return nil }))
 	a.True(s.AddDeferred(func() error { return errors.New("boom") }))
 	a.True(s.AddDeferred(func() error { order = append(order, 3); return nil }))
 
+	// No active tasks, so this will immediately invoke the deferred
+	// functions.
 	s.Stop(0)
 	a.Equal([]int{3, 2, 1}, order)
 	a.ErrorContains(s.Errors()[0], "boom")
@@ -251,76 +232,75 @@ func TestConfigsEarlyBreak(t *testing.T) {
 	a.Equal("a", first)
 }
 
-func TestStopWithZeroCount(t *testing.T) {
-	a := assert.New(t)
+// This test checks that the state will move into a hard stop condition
+// with an expected error state.
+func TestStopStateTransitions(t *testing.T) {
+	tcs := []struct {
+		Grace  time.Duration
+		Apply  bool
+		Drain  bool
+		Expect error
+	}{
+		{0, false, false, ErrStopped},
+		{0, true, false, ErrGracePeriodExpired},
+		{0, true, true, ErrGracePeriodExpired},
 
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-	s.Stop(0)
-	a.True(s.IsStopping())
-
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrStopped)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for cancel")
+		{time.Hour, false, false, ErrStopped},
+		{time.Hour, true, false, ErrGracePeriodExpired},
+		{time.Hour, true, true, ErrStopped},
 	}
-}
 
-func TestStopWithGracePeriod(t *testing.T) {
-	a := assert.New(t)
+	for idx, tc := range tcs {
+		t.Run(fmt.Sprintf("%d", idx), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				r := require.New(t)
+				now := time.Now()
 
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
+				// Set up a State that records its cancellation error.
+				cancelErr := make(chan error, 1)
+				s := New(func(err error) { cancelErr <- err }, nil, nil)
 
-	a.True(s.Apply(1))
-	s.Stop(50 * time.Millisecond)
-	a.True(s.IsStopping())
+				// Optionally, mark a task as running.
+				if tc.Apply {
+					r.True(s.Apply(1))
+				}
 
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrGracePeriodExpired)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for grace period expiry")
-	}
-}
+				// Place the State into the soft-stop condition.
+				s.Stop(tc.Grace)
+				<-s.Stopping()
+				r.True(s.IsStopping())
 
-func TestStopWithGraceNegative(t *testing.T) {
-	a := assert.New(t)
+				// Jump halfway into the grace period if there's an open
+				// task. Verify that the cancel function hasn't been
+				// invoked yet.
+				if tc.Apply && tc.Grace > 0 {
+					time.Sleep(tc.Grace / 2)
+					select {
+					case <-cancelErr:
+						r.Fail("should not be canceled yet")
+					default:
+					}
+				}
 
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
+				if tc.Drain {
+					// Ensure we wouldn't over-release the State.
+					r.True(tc.Apply)
+					r.True(s.Apply(-1))
+				}
 
-	a.True(s.Apply(1))
-	s.Stop(-1)
-	a.True(s.IsStopping())
+				// Wait for the state to hard-stop and cancel out.
+				err := <-cancelErr
+				r.ErrorIs(err, tc.Expect)
 
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrGracePeriodExpired)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for grace period expiry")
-	}
-}
-
-func TestStopWithGracePeriodCleanExit(t *testing.T) {
-	a := assert.New(t)
-
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-	a.True(s.Apply(1))
-	s.Stop(10 * time.Second)
-
-	// Simulate clean exit before grace period expires.
-	a.True(s.Apply(-1))
-
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrStopped)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for cancel")
+				// Determine how much fake time has elapsed.
+				delta := time.Since(now)
+				if errors.Is(tc.Expect, ErrStopped) {
+					r.LessOrEqual(delta, tc.Grace)
+				} else if errors.Is(tc.Expect, ErrGracePeriodExpired) {
+					r.GreaterOrEqual(delta, tc.Grace)
+				}
+			})
+		})
 	}
 }
 
@@ -348,69 +328,43 @@ func TestStopIdempotent(t *testing.T) {
 	a.Equal(1, cancelCount, "cancel should only be called once")
 }
 
-func TestStoppingChannel(t *testing.T) {
-	a := assert.New(t)
-
-	s := New(func(error) {}, nil, nil)
-	ch := s.Stopping()
-
-	select {
-	case <-ch:
-		a.Fail("stopping channel should not be closed yet")
-	default:
-		// OK
-	}
-
-	s.Stop(0)
-
-	select {
-	case <-ch:
-		// OK
-	case <-time.After(time.Second):
-		a.Fail("stopping channel should be closed after Stop")
-	}
-}
-
 func TestStopOnIdleWhenAlreadyIdle(t *testing.T) {
-	a := assert.New(t)
+	synctest.Test(t, func(t *testing.T) {
+		r := require.New(t)
 
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
+		cancelErr := make(chan error, 1)
+		s := New(func(err error) { cancelErr <- err }, nil, nil)
 
-	// Count is already 0, so StopOnIdle should immediately stop.
-	s.StopOnIdle(0)
-	a.True(s.IsStopOnIdle())
-	a.True(s.IsStopping())
+		// Count is already 0, so StopOnIdle should immediately stop.
+		s.StopOnIdle(time.Hour)
+		r.True(s.IsStopOnIdle())
+		r.True(s.IsStopping())
 
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrStopped)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for cancel")
-	}
+		err := <-cancelErr
+		r.ErrorIs(err, ErrStopped)
+	})
 }
 
 func TestStopOnIdleWhenBusy(t *testing.T) {
-	a := assert.New(t)
+	synctest.Test(t, func(t *testing.T) {
+		r := require.New(t)
 
-	cancelErr := make(chan error, 1)
-	s := New(func(err error) { cancelErr <- err }, nil, nil)
+		cancelErr := make(chan error, 1)
+		s := New(func(err error) { cancelErr <- err }, nil, nil)
 
-	a.True(s.Apply(1))
-	s.StopOnIdle(0)
+		r.True(s.Apply(1))
+		s.StopOnIdle(time.Hour)
+		r.True(s.IsStopOnIdle())
 
-	// Should not be stopping yet (count > 0).
-	a.False(s.IsStopping())
+		// Should not be stopping yet (count > 0).
+		r.False(s.IsStopping())
 
-	// Now become idle.
-	a.True(s.Apply(-1))
+		// Now become idle.
+		r.True(s.Apply(-1))
 
-	select {
-	case err := <-cancelErr:
-		a.ErrorIs(err, ErrStopped)
-	case <-time.After(time.Second):
-		a.Fail("timed out waiting for cancel")
-	}
+		err := <-cancelErr
+		r.ErrorIs(err, ErrStopped)
+	})
 }
 
 func TestParent(t *testing.T) {
