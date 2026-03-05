@@ -204,6 +204,57 @@ func TestDeadline(t *testing.T) {
 	a.True(hasDeadline)
 }
 
+func TestDeferContextState(t *testing.T) {
+	r := require.New(t)
+
+	var didDefer atomic.Bool
+
+	s := New()
+	r.True(s.Defer(func(ctx Context) error {
+		// The context should be stopping, but not canceled.
+		r.True(ctx.IsStopping())
+
+		select {
+		case <-ctx.Done():
+			r.Fail("should not be canceled yet")
+		default:
+			r.NoError(ctx.Err())
+		}
+
+		didDefer.Store(true)
+		return nil
+	}))
+
+	s.Stop()
+	r.NoError(s.Wait())
+	r.True(didDefer.Load())
+}
+
+func TestDeferError(t *testing.T) {
+	r := require.New(t)
+
+	boom := errors.New("boom")
+
+	s := New()
+	s.Defer(func(_ Context) error { return boom })
+	s.Stop()
+	r.ErrorIs(s.Wait(), boom)
+}
+
+func TestDeferImmediate(t *testing.T) {
+	r := require.New(t)
+	s := New()
+	s.Stop()
+
+	// Expect a synchronous call.
+	var didCall atomic.Bool
+	deferred, err := Defer(s, func() { didCall.Store(true) })
+	r.NoError(err)
+	r.False(deferred)
+
+	r.True(didCall.Load())
+}
+
 func TestErrorHandlerRecord(t *testing.T) {
 	r := require.New(t)
 	s := WithContext(t.Context(),
@@ -416,10 +467,15 @@ func TestWaitInterrupt(t *testing.T) {
 	otherErr := errors.New("boom")
 	ctx.AddError(otherErr)
 
-	stdCtx, cancel := context.WithCancel(ctx)
+	stdCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	r.ErrorIs(ctx.WaitCtx(stdCtx), context.Canceled)
 	r.ErrorIs(ctx.WaitCtx(stdCtx), otherErr)
+
+	// The stopper is still running, we've just short-circuited the call
+	// to WaitCtx().
+	r.False(ctx.IsStopping())
+	r.Nil(ctx.Err())
 }
 
 func TestWithMiddleware(t *testing.T) {

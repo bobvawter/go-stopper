@@ -83,11 +83,10 @@ type Context interface {
 	//
 	// This method can be used to clean up resources that are used by
 	// goroutines associated with the Context (e.g. closing database
-	// connections). The Context will already have been canceled by the
-	// time the Func is run, so the deferred behaviors should be
-	// associated with [context.Background] or similar. Callbacks will
-	// be executed in a LIFO manner. Any error returned by the deferred
-	// function will be available from [Context.Wait].
+	// connections). The Context passed to the callback will be stopped
+	// but not yet canceled. Callbacks will be executed in a LIFO
+	// manner. Any error returned by the deferred function will be
+	// available from [Context.Wait].
 	//
 	// If the Context has already stopped, the callback will be executed
 	// immediately and this method will return false. Otherwise, this
