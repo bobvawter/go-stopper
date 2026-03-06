@@ -448,7 +448,7 @@ func TestPanicHandlerString(t *testing.T) {
 		},
 		TaskName("tester"),
 	)
-	r.ErrorContains(err, "tester: recovered: boom!")
+	r.ErrorContains(err, "tester: recovered: panic: boom!")
 
 	var recovered *RecoveredError
 	r.ErrorAs(err, &recovered)
