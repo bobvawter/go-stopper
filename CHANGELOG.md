@@ -1,6 +1,7 @@
 # Changelog
 
 ## v2.0.0-alpha.next
+  * `TaskInfo` is now visible to Middleware setup phase.
 
 ## v2.0.0-alpha.2
   * Update `seq` package iterators to only cancel on hard-stop.

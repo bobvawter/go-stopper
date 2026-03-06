@@ -159,9 +159,14 @@ func TestTaskInfoFromMiddleware(t *testing.T) {
 
 	var seen *TaskInfo
 	mw := func(outer Context) (Context, Invoker) {
+		// TaskInfo can be accessed during setup.
+		setup, ok := TaskInfoFrom(outer)
+		r.True(ok)
 		return outer, func(ctx Context, task Func) error {
+			// We also ensure it's propagated to the invocation.
 			info, ok := TaskInfoFrom(ctx)
 			r.True(ok)
+			r.Same(setup, info)
 			seen = info
 			return task(ctx)
 		}
@@ -191,6 +196,15 @@ func TestTaskInfoFromMiddleware(t *testing.T) {
 	ptr := seen.Error.Load()
 	r.NotNil(ptr)
 	r.ErrorIs(*ptr, taskErr)
+
+	// Check the error pointer for a successful task points to nil.
+	r.NoError(s.Call(
+		func(_ Context) error { return nil },
+		TaskMiddleware(mw)),
+	)
+	ptr = seen.Error.Load()
+	r.NotNil(ptr)
+	r.NoError(*ptr)
 
 	s.Stop()
 	_ = s.Wait()

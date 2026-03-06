@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"runtime/trace"
 	"sync/atomic"
 	"time"
@@ -294,8 +293,7 @@ func (c *impl) Call(fn Func, opts ...TaskOption) error {
 	}
 	defer func() { c.st.Apply(-1) }()
 
-	iCtx, inv := c.taskInvoker(true, opts)
-	return inv(iCtx, fn)
+	return c.taskInvoker(fn, true, opts)()
 }
 
 func (c *impl) Deadline() (deadline time.Time, ok bool) { return c.delegate.Deadline() }
@@ -316,11 +314,11 @@ func (c *impl) Go(fn Func, opts ...TaskOption) error {
 	if !c.st.Apply(1) {
 		return ErrStopped
 	}
-	iCtx, inv := c.taskInvoker(false, opts)
+	inv := c.taskInvoker(fn, false, opts)
 	go func() {
 		defer c.st.Apply(-1)
 		// The invoker will delegate to an ErrorHandler.
-		_ = inv(iCtx, fn)
+		_ = inv()
 	}()
 	return nil
 }
@@ -393,15 +391,35 @@ func (c *impl) config() *config {
 	return c.st.Config().(*config)
 }
 
-func (c *impl) taskInvoker(returnErr bool, opts []TaskOption) (Context, Invoker) {
+func (c *impl) taskInvoker(task Func, returnErr bool, opts []TaskOption) func() error {
 	ctxCfg := c.config()
 	taskCfg := applyTaskOpts(ctxCfg.taskOpts, opts)
 
-	// Install runtime tracing.
-	traceCtx, traceTask := trace.NewTask(c, taskCfg.name)
-	iCtx := c.WithDelegate(traceCtx)
+	// This will be the (modified) Context used for the invocation.
+	iCtx := Context(c)
 
-	// Call setup in declaration order.
+	// Install runtime tracing.
+	traceCtx, traceTask := trace.NewTask(iCtx, taskCfg.name)
+	iCtx = iCtx.WithDelegate(traceCtx)
+
+	// Optionally, inject TaskInfo at the root for Middleware.
+	var taskDone chan struct{}
+	var taskInfo *TaskInfo
+	if !ctxCfg.noTaskInfo {
+		taskDone = make(chan struct{})
+		taskInfo = &TaskInfo{
+			Context:     c,
+			ContextName: ctxCfg.name,
+			Done:        taskDone,
+			Started:     time.Now(),
+			Task:        task,
+			TaskName:    taskCfg.name,
+		}
+		iCtx = iCtx.WithDelegate(
+			context.WithValue(iCtx, taskInfoKey{}, taskInfo))
+	}
+
+	// Call the middleware setup phase in declaration order.
 	invokers := make([]Invoker, len(taskCfg.mw))
 	for idx, mw := range taskCfg.mw {
 		iCtx, invokers[idx] = mw(iCtx)
@@ -419,60 +437,29 @@ func (c *impl) taskInvoker(returnErr bool, opts []TaskOption) (Context, Invoker)
 		}
 	}
 
-	// Install a panic handler at the root of the chain.
-	return iCtx, func(ctx Context, task Func) (outErr error) {
+	return func() error {
 		defer traceTask.End()
-
-		// Optionally, inject TaskInfo at the root for Middleware.
-		var taskDone chan struct{}
-		var taskInfo *TaskInfo
-		if !ctxCfg.noTaskInfo {
-			taskDone = make(chan struct{})
+		if taskDone != nil {
 			defer close(taskDone)
-
-			taskInfo = &TaskInfo{
-				Context:     c,
-				ContextName: ctxCfg.name,
-				Done:        taskDone,
-				Started:     time.Now(),
-				Task:        task,
-				TaskName:    taskCfg.name,
-			}
-			ctx = ctx.WithDelegate(
-				context.WithValue(ctx, taskInfoKey{}, taskInfo))
 		}
-
-		defer func() {
-			if r := recover(); r != nil {
-				rErr, ok := r.(error)
-				if !ok {
-					rErr = fmt.Errorf("%v", r)
-				}
-				stack := make([]uintptr, 32)
-				stack = stack[:runtime.Callers(2, stack)]
-				rErr = &RecoveredError{
-					Err:   rErr,
-					Stack: stack,
-				}
-				outErr = errors.Join(outErr, rErr)
-			}
-			if outErr == nil {
-				return
-			}
-			outErr = fmt.Errorf("%s: %w", taskCfg.name, outErr)
-			if taskInfo != nil {
-				taskInfo.Error.Store(&outErr)
-			}
-			if returnErr {
-				return
-			}
-			// Delegate to installed handler.
-			if h := taskCfg.errHandler; h != nil {
-				h(ctx, outErr)
-				outErr = nil
-			}
-		}()
-
-		return chain(ctx, task)
+		// Invoke the call chain with a panic handler.
+		err := safe.CallE(func() error {
+			return chain(iCtx, task)
+		})
+		// Decorate error.
+		if err != nil && taskCfg.name != "" {
+			err = fmt.Errorf("%s: %w", taskCfg.name, err)
+		}
+		// Store the task outcome.
+		if taskInfo != nil {
+			taskInfo.Error.Store(&err)
+		}
+		// Success case or return error for Call()
+		if err == nil || returnErr {
+			return err
+		}
+		// Go() delegates to the installed handler.
+		taskCfg.errHandler(iCtx, err)
+		return nil
 	}
 }
