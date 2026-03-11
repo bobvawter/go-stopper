@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 // TestLoopCustomRetryable verifies that the Retryable predicate
@@ -24,7 +25,7 @@ func TestLoopCustomRetryable(t *testing.T) {
 		},
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()
@@ -58,7 +59,7 @@ func TestLoopDefaults(t *testing.T) {
 
 	l := &Loop{}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()
@@ -83,7 +84,7 @@ func TestLoopMaxAttempts(t *testing.T) {
 
 	l := &Loop{MaxAttempts: 3}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()
@@ -107,7 +108,7 @@ func TestLoopMaxAttemptsOne(t *testing.T) {
 
 	l := &Loop{MaxAttempts: 1}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()
@@ -131,7 +132,7 @@ func TestLoopMiddlewareIndependentState(t *testing.T) {
 
 	l := &Loop{MaxAttempts: 3}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()
@@ -165,7 +166,7 @@ func TestLoopSuccessOnFirstAttempt(t *testing.T) {
 
 	l := &Loop{MaxAttempts: 5}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()
@@ -186,7 +187,7 @@ func TestLoopSuccessOnRetry(t *testing.T) {
 
 	l := &Loop{MaxAttempts: 5}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(l.Middleware())),
 	)
 	defer ctx.Stop()

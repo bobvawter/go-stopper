@@ -4,7 +4,7 @@
 package retry
 
 import (
-	"math/rand/v2"
+	"math/rand"
 	"time"
 
 	"vawter.tech/stopper/v2"

@@ -13,7 +13,7 @@ extends the standard library `context.Context` with a two-phase shutdown
 model — a soft-stop signal for graceful draining followed by a hard
 cancel after a configurable grace period — and includes task-launching
 APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
-[`ErrGroup`](https://pkg.go.dev/golang.org/x/sync/errgroup).
+[`ErrGroup`](https://pkg.go.dev/golang.org/x/sync/errgroup). This package supports `go1.21.0` and onwards.
 
 ## Features
 

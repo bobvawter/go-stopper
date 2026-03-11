@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 func TestWithMaxConcurrency(t *testing.T) {
@@ -19,7 +20,7 @@ func TestWithMaxConcurrency(t *testing.T) {
 	const maxConcurrency = 3
 
 	mw := WithMaxConcurrency(maxConcurrency)
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(mw),
 		),
@@ -31,23 +32,21 @@ func TestWithMaxConcurrency(t *testing.T) {
 	// Use a dispatcher that doesn't inherit the middleware to launch
 	// tasks that do go through the concurrency middleware.
 	r.NoError(ctx.Go(func(ctx stopper.Context) error {
-		for range 20 {
-			if err := ctx.Go(func(ctx stopper.Context) error {
-				cur := running.Add(1)
-				defer running.Add(-1)
-				// Track the maximum observed concurrency.
-				for {
-					old := maxSeen.Load()
-					if cur <= old || maxSeen.CompareAndSwap(old, cur) {
-						break
-					}
+		if err := stopper.GoN(ctx, 20, func(ctx stopper.Context) error {
+			cur := running.Add(1)
+			defer running.Add(-1)
+			// Track the maximum observed concurrency.
+			for {
+				old := maxSeen.Load()
+				if cur <= old || maxSeen.CompareAndSwap(old, cur) {
+					break
 				}
-				// Hold the slot briefly to allow other goroutines to contend.
-				time.Sleep(10 * time.Millisecond)
-				return nil
-			}); err != nil {
-				return err
 			}
+			// Hold the slot briefly to allow other goroutines to contend.
+			time.Sleep(10 * time.Millisecond)
+			return nil
+		}); err != nil {
+			return err
 		}
 		return nil
 	}, stopper.TaskNoInherit()))
@@ -77,7 +76,7 @@ func TestWithMaxConcurrencySoftStop(t *testing.T) {
 	r := require.New(t)
 
 	const maxConcurrency = 1
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxConcurrency(maxConcurrency)),
 		),
@@ -127,7 +126,7 @@ func TestWithMaxConcurrencyHardStop(t *testing.T) {
 	r := require.New(t)
 
 	const maxConcurrency = 1
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxConcurrency(maxConcurrency)),
 		),
@@ -170,14 +169,14 @@ func TestWithMaxRate(t *testing.T) {
 	r := require.New(t)
 
 	// High rate and burst to avoid blocking in this test.
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxRate(1000, 100)),
 		),
 	)
 
 	var count atomic.Int32
-	for range 10 {
+	for i := 0; i < 10; i++ {
 		r.NoError(ctx.Call(func(ctx stopper.Context) error {
 			count.Add(1)
 			return nil
@@ -193,14 +192,14 @@ func TestWithMaxRateEnforcesLimit(t *testing.T) {
 	r := require.New(t)
 
 	// Rate of 10/sec with burst of 2: after burst, calls must wait.
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxRate(20, 2)),
 		),
 	)
 
 	start := time.Now()
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		r.NoError(ctx.Call(func(ctx stopper.Context) error {
 			return nil
 		}))
@@ -218,7 +217,7 @@ func TestWithMaxRateSoftStop(t *testing.T) {
 	r := require.New(t)
 
 	// Very low rate so waiting for a token takes a long time.
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxRate(0.001, 1)),
 		),
@@ -254,7 +253,7 @@ func TestWithMaxRateSoftStop(t *testing.T) {
 func TestWithMaxRateErrorPropagation(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxRate(1000, 100)),
 		),
@@ -273,7 +272,7 @@ func TestWithMaxRateErrorPropagation(t *testing.T) {
 func TestWithMaxConcurrencyErrorPropagation(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxConcurrency(5)),
 		),
@@ -292,7 +291,7 @@ func TestWithMaxConcurrencyErrorPropagation(t *testing.T) {
 func TestCombinedRateAndConcurrency(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(
 				WithMaxRate(1000, 100),
@@ -302,7 +301,7 @@ func TestCombinedRateAndConcurrency(t *testing.T) {
 	)
 
 	var count atomic.Int32
-	for range 10 {
+	for i := 0; i < 10; i++ {
 		r.NoError(ctx.Call(func(ctx stopper.Context) error {
 			count.Add(1)
 			return nil
@@ -318,7 +317,7 @@ func TestWithMaxConcurrencyReleasesOnCompletion(t *testing.T) {
 	r := require.New(t)
 
 	const maxConcurrency = 1
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxConcurrency(maxConcurrency)),
 		),
@@ -326,7 +325,7 @@ func TestWithMaxConcurrencyReleasesOnCompletion(t *testing.T) {
 
 	// Run sequential tasks. If slots are not released, the second
 	// call would block forever.
-	for range 5 {
+	for i := 0; i < 5; i++ {
 		r.NoError(ctx.Call(func(ctx stopper.Context) error {
 			return nil
 		}))
@@ -340,7 +339,7 @@ func TestWithMaxConcurrencyWithGo(t *testing.T) {
 	r := require.New(t)
 
 	const maxConcurrency = 2
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(WithMaxConcurrency(maxConcurrency)),
 		),
@@ -351,21 +350,19 @@ func TestWithMaxConcurrencyWithGo(t *testing.T) {
 
 	// Use a dispatcher that doesn't inherit the middleware.
 	r.NoError(ctx.Go(func(ctx stopper.Context) error {
-		for range 10 {
-			if err := ctx.Go(func(ctx stopper.Context) error {
-				cur := running.Add(1)
-				defer running.Add(-1)
-				for {
-					old := maxSeen.Load()
-					if cur <= old || maxSeen.CompareAndSwap(old, cur) {
-						break
-					}
+		if err := stopper.GoN(ctx, 10, func(ctx stopper.Context) error {
+			cur := running.Add(1)
+			defer running.Add(-1)
+			for {
+				old := maxSeen.Load()
+				if cur <= old || maxSeen.CompareAndSwap(old, cur) {
+					break
 				}
-				time.Sleep(20 * time.Millisecond)
-				return nil
-			}); err != nil {
-				return err
 			}
+			time.Sleep(20 * time.Millisecond)
+			return nil
+		}); err != nil {
+			return err
 		}
 		return nil
 	}, stopper.TaskNoInherit()))

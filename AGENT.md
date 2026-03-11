@@ -27,3 +27,5 @@
 > **README.md**: Keep `README.md` in sync with the package's public API. When adding, removing, or renaming exported types, functions, or sub-packages, update the Features list, Quick Start snippet, and Examples table so they stay accurate. If a new sub-package is introduced, add a link to its `pkg.go.dev` page.
 
 > **doc.go**: The top-level `doc.go` is the canonical package documentation shown on `pkg.go.dev`. Update it whenever the public API surface changes — new exported symbols, removed APIs, or renamed concepts — so the overview, code examples, and section headings remain correct.
+
+> **Test contexts**: When a stdlib `context.Context` is required, testable examples should use `context.Background()` and regular tests should use `tctx.Context(t)` to provide a compability shim for older golang versions.

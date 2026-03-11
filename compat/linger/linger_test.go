@@ -4,7 +4,6 @@
 package linger
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/internal/tctx"
 
 	"vawter.tech/stopper"
 )
@@ -20,7 +20,7 @@ func TestRecorder(t *testing.T) {
 	r := require.New(t)
 
 	rec := NewRecorder(1)
-	ctx := stopper.WithInvoker(context.Background(), rec.Invoke)
+	ctx := stopper.WithInvoker(tctx.Context(t), rec.Invoke)
 
 	r.NoError(ctx.Call(func(ctx *stopper.Context) error {
 		checkRecorder(r, rec, "linger.TestRecorder")
@@ -45,7 +45,7 @@ func TestRecorderNested(t *testing.T) {
 	r := require.New(t)
 
 	rec1 := NewRecorder(1)
-	ctx := stopper.WithInvoker(context.Background(), rec1.Invoke)
+	ctx := stopper.WithInvoker(tctx.Context(t), rec1.Invoke)
 
 	rec2 := NewRecorder(1)
 	ctx = stopper.WithInvoker(ctx, rec2.Invoke)

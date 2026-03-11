@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 	"vawter.tech/stopper/v2/limit"
 )
 
@@ -23,7 +24,7 @@ func TestRecorderNested(t *testing.T) {
 	mux := limit.WithMaxConcurrency(1)
 
 	rec1 := NewRecorder(sampleDepth)
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(
 			stopper.TaskMiddleware(mux, rec1.Middleware),
 		),

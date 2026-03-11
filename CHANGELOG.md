@@ -2,6 +2,7 @@
 
 ## v2.0.0-alpha.next
   * `TaskInfo` is now visible to Middleware setup phase.
+  * Support `go1.21.0` minimum version.
 
 ## v2.0.0-alpha.2
   * Update `seq` package iterators to only cancel on hard-stop.

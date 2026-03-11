@@ -13,15 +13,16 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/internal/tctx"
 )
 
 func TestAmbient(t *testing.T) {
 	r := require.New(t)
 
-	s := From(context.Background())
+	s := From(tctx.Context(t))
 	r.Same(s, Background())
 
-	r.False(IsStopping(context.Background()))
+	r.False(IsStopping(tctx.Context(t)))
 	s.Go(func(*Context) error { return nil })
 
 	// Should be a no-op.
@@ -33,7 +34,7 @@ func TestAmbient(t *testing.T) {
 func TestCancelOuter(t *testing.T) {
 	r := require.New(t)
 
-	top, cancelTop := context.WithCancel(context.Background())
+	top, cancelTop := context.WithCancel(tctx.Context(t))
 
 	s := WithContext(top)
 
@@ -55,7 +56,7 @@ func TestCancelOuter(t *testing.T) {
 func TestCall(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 
 	// Verify that returning an error from the callback does not stop
 	// the Context.
@@ -77,7 +78,7 @@ func TestCall(t *testing.T) {
 func TestCallbackErrorStops(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 	err := errors.New("BOOM")
 	s.Go(func(*Context) error { return err })
 	r.ErrorIs(s.Wait(), err)
@@ -87,7 +88,7 @@ func TestCallbackErrorStops(t *testing.T) {
 func TestChainStopper(t *testing.T) {
 	r := require.New(t)
 
-	parent := WithContext(context.Background())
+	parent := WithContext(tctx.Context(t))
 	mid := context.WithValue(parent, parent, parent) // Demonstrate unwrapping.
 	child := WithContext(mid)
 	r.Zero(parent.Len())
@@ -159,7 +160,7 @@ func TestChainStopper(t *testing.T) {
 func TestDeadline(t *testing.T) {
 	r := require.New(t)
 
-	ctxCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Hour))
+	ctxCtx, cancel := context.WithDeadline(tctx.Context(t), time.Now().Add(-time.Hour))
 	defer cancel()
 
 	s := WithContext(ctxCtx)
@@ -179,7 +180,7 @@ func TestDefer(t *testing.T) {
 		calls = append(calls, s)
 	}
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 	s.Defer(func() { recordCall("fifo_a") })
 	s.Defer(func() { recordCall("fifo_b") })
 	s.Go(func(s *Context) error {
@@ -203,7 +204,7 @@ func TestDefer(t *testing.T) {
 func TestGracePeriod(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 
 	// This goroutine waits on Done, which is not correct.
 	s.Go(func(s *Context) error { <-s.Done(); return nil })
@@ -220,7 +221,7 @@ func TestGracePeriod(t *testing.T) {
 func TestParentAlreadyStopping(t *testing.T) {
 	r := require.New(t)
 
-	parent := WithContext(context.Background())
+	parent := WithContext(tctx.Context(t))
 	child := WithContext(parent)
 
 	parent.Stop(0)
@@ -231,7 +232,7 @@ func TestParentAlreadyStopping(t *testing.T) {
 func TestStopper(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 	// v1-to-v2: From() wraps the v2.Context in a new compat *Context,
 	// so pointer identity (Same) no longer holds. Use NotNil instead.
 	r.NotNil(From(s))
@@ -282,7 +283,7 @@ func TestStopper(t *testing.T) {
 func TestStopWhenEmpty(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 	s.Go(func(s *Context) error {
 		s.StopOnIdle()
 		return nil
@@ -299,7 +300,7 @@ func TestStopWhenEmpty(t *testing.T) {
 func TestStopWhenAlreadyEmpty(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 	s.StopOnIdle()
 
 	select {
@@ -323,7 +324,7 @@ func TestStopWhenEmptyBackground(t *testing.T) {
 func TestUnused(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 	s.Stop(0)
 	select {
 	case <-s.Done():
@@ -338,12 +339,12 @@ func TestUnused(t *testing.T) {
 func TestWith(t *testing.T) {
 	r := require.New(t)
 
-	s := WithContext(context.Background())
+	s := WithContext(tctx.Context(t))
 
 	type k string
 
-	c1 := context.WithValue(context.Background(), k("foo"), "bar")
-	c2 := context.WithValue(context.Background(), k("baz"), "quux")
+	c1 := context.WithValue(tctx.Context(t), k("foo"), "bar")
+	c2 := context.WithValue(tctx.Context(t), k("baz"), "quux")
 
 	s.With(c1).Go(func(ctx *Context) error {
 		r.NotSame(s, ctx)
@@ -390,7 +391,7 @@ func TestWithInvoker(t *testing.T) {
 	r := require.New(t)
 
 	var called atomic.Bool
-	ctx := WithInvoker(context.Background(), func(fn Func) Func {
+	ctx := WithInvoker(tctx.Context(t), func(fn Func) Func {
 		return func(ctx *Context) error {
 			called.Store(true)
 			return fn(ctx)

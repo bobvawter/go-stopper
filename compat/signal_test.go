@@ -12,6 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper"
+	"vawter.tech/stopper/internal/tctx"
 )
 
 func ExampleStopOnReceive_interrupt() {
@@ -71,7 +72,7 @@ func TestStopOnReceiveStoppedElsewhere(t *testing.T) {
 func TestStopOnReceiveValue(t *testing.T) {
 	r := require.New(t)
 
-	ctx := stopper.WithContext(context.Background())
+	ctx := stopper.WithContext(tctx.Context(t))
 
 	ch := make(chan struct{}, 1)
 	ch <- struct{}{}

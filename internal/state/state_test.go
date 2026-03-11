@@ -5,10 +5,7 @@ package state
 
 import (
 	"errors"
-	"fmt"
-	"slices"
 	"testing"
-	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -83,25 +80,6 @@ func TestApplyOverReleasePanics(t *testing.T) {
 
 	a.Panics(func() {
 		s.Apply(-2)
-	})
-}
-
-func TestApplyTriggersStopOnIdle(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		r := require.New(t)
-
-		cancelErr := make(chan error, 1)
-		s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-		r.True(s.Apply(1))
-		s.StopOnIdle(time.Hour)
-		// Not yet idle, so not canceled.
-		r.True(s.IsStopOnIdle())
-
-		r.True(s.Apply(-1))
-
-		err := <-cancelErr
-		r.ErrorIs(err, ErrStopped)
 	})
 }
 
@@ -193,117 +171,6 @@ func TestConfig(t *testing.T) {
 	a.Equal(cfg, s2.Config())
 }
 
-func TestConfigs(t *testing.T) {
-	a := assert.New(t)
-
-	cfgA := "configA"
-	cfgB := "configB"
-	cfgC := "configC"
-
-	grandparent := New(func(error) {}, cfgA, nil)
-	parent := New(func(error) {}, nil, grandparent) // nil config, should be skipped
-	child := New(func(error) {}, cfgB, parent)
-	grandchild := New(func(error) {}, cfgC, child)
-
-	configs := slices.Collect(grandchild.Configs())
-	// Should yield from root to leaf, skipping nils.
-	a.Equal([]any{cfgA, cfgB, cfgC}, configs)
-}
-
-func TestConfigsEmpty(t *testing.T) {
-	a := assert.New(t)
-
-	s := New(func(error) {}, nil, nil)
-	configs := slices.Collect(s.Configs())
-	a.Empty(configs)
-}
-
-func TestConfigsEarlyBreak(t *testing.T) {
-	a := assert.New(t)
-
-	s1 := New(func(error) {}, "a", nil)
-	s2 := New(func(error) {}, "b", s1)
-
-	var first any
-	for cfg := range s2.Configs() {
-		first = cfg
-		break
-	}
-	a.Equal("a", first)
-}
-
-// This test checks that the state will move into a hard stop condition
-// with an expected error state.
-func TestStopStateTransitions(t *testing.T) {
-	tcs := []struct {
-		Grace  time.Duration
-		Apply  bool
-		Drain  bool
-		Expect error
-	}{
-		{0, false, false, ErrStopped},
-		{0, true, false, ErrGracePeriodExpired},
-		{0, true, true, ErrGracePeriodExpired},
-
-		{time.Hour, false, false, ErrStopped},
-		{time.Hour, true, false, ErrGracePeriodExpired},
-		{time.Hour, true, true, ErrStopped},
-	}
-
-	for idx, tc := range tcs {
-		t.Run(fmt.Sprintf("%d", idx), func(t *testing.T) {
-			synctest.Test(t, func(t *testing.T) {
-				r := require.New(t)
-				now := time.Now()
-
-				// Set up a State that records its cancellation error.
-				cancelErr := make(chan error, 1)
-				s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-				// Optionally, mark a task as running.
-				if tc.Apply {
-					r.True(s.Apply(1))
-				}
-
-				// Place the State into the soft-stop condition.
-				s.Stop(tc.Grace)
-				<-s.Stopping()
-				r.True(s.IsStopping())
-
-				// Jump halfway into the grace period if there's an open
-				// task. Verify that the cancel function hasn't been
-				// invoked yet.
-				if tc.Apply && tc.Grace > 0 {
-					time.Sleep(tc.Grace / 2)
-					select {
-					case <-cancelErr:
-						r.Fail("should not be canceled yet")
-					default:
-					}
-				}
-
-				if tc.Drain {
-					// Ensure we wouldn't over-release the State.
-					r.True(tc.Apply)
-					r.True(s.Apply(-1))
-				}
-
-				// Wait for the state to hard-stop and cancel out.
-				err := <-cancelErr
-				r.ErrorIs(err, tc.Expect)
-
-				// Determine how much fake time has elapsed.
-				delta := time.Since(now)
-				if errors.Is(tc.Expect, ErrStopped) {
-					r.LessOrEqual(delta, tc.Grace)
-				} else if errors.Is(tc.Expect, ErrGracePeriodExpired) {
-					r.GreaterOrEqual(delta, tc.Grace)
-				}
-			})
-		})
-	}
-}
-
 func TestCancelIdempotent(t *testing.T) {
 	a := assert.New(t)
 	cancelCount := 0
@@ -326,45 +193,6 @@ func TestStopIdempotent(t *testing.T) {
 	s.Stop(0)
 
 	a.Equal(1, cancelCount, "cancel should only be called once")
-}
-
-func TestStopOnIdleWhenAlreadyIdle(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		r := require.New(t)
-
-		cancelErr := make(chan error, 1)
-		s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-		// Count is already 0, so StopOnIdle should immediately stop.
-		s.StopOnIdle(time.Hour)
-		r.True(s.IsStopOnIdle())
-		r.True(s.IsStopping())
-
-		err := <-cancelErr
-		r.ErrorIs(err, ErrStopped)
-	})
-}
-
-func TestStopOnIdleWhenBusy(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		r := require.New(t)
-
-		cancelErr := make(chan error, 1)
-		s := New(func(err error) { cancelErr <- err }, nil, nil)
-
-		r.True(s.Apply(1))
-		s.StopOnIdle(time.Hour)
-		r.True(s.IsStopOnIdle())
-
-		// Should not be stopping yet (count > 0).
-		r.False(s.IsStopping())
-
-		// Now become idle.
-		r.True(s.Apply(-1))
-
-		err := <-cancelErr
-		r.ErrorIs(err, ErrStopped)
-	})
 }
 
 func TestParent(t *testing.T) {

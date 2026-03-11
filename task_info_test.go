@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 func TestTaskInfoMarshalJSON(t *testing.T) {
@@ -150,7 +151,7 @@ func TestTaskInfoFrom(t *testing.T) {
 func TestTaskInfoFromMissing(t *testing.T) {
 	r := require.New(t)
 
-	_, ok := TaskInfoFrom(t.Context())
+	_, ok := TaskInfoFrom(tctx.Context(t))
 	r.False(ok)
 }
 

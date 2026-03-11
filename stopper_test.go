@@ -16,12 +16,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 func TestCancelOuter(t *testing.T) {
 	a := assert.New(t)
 
-	top, cancelTop := context.WithCancel(t.Context())
+	top, cancelTop := context.WithCancel(tctx.Context(t))
 
 	s := WithContext(top)
 
@@ -195,7 +196,7 @@ func TestConfigInherit(t *testing.T) {
 func TestDeadline(t *testing.T) {
 	a := assert.New(t)
 
-	ctxCtx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Hour))
+	ctxCtx, cancel := context.WithDeadline(tctx.Context(t), time.Now().Add(-time.Hour))
 	defer cancel()
 
 	s := WithContext(ctxCtx)
@@ -257,7 +258,7 @@ func TestDeferImmediate(t *testing.T) {
 
 func TestErrorHandlerRecord(t *testing.T) {
 	r := require.New(t)
-	s := WithContext(t.Context(),
+	s := WithContext(tctx.Context(t),
 		WithTaskOptions(
 			TaskErrHandler(ErrorHandlerRecord),
 		))
@@ -280,14 +281,14 @@ func TestErrorHandlerRecord(t *testing.T) {
 
 func TestFromBackground(t *testing.T) {
 	r := require.New(t)
-	found, ok := From(t.Context())
+	found, ok := From(tctx.Context(t))
 	r.False(ok)
 	r.Nil(found)
 }
 
 func TestIsStoppingOther(t *testing.T) {
 	r := require.New(t)
-	r.False(IsStopping(t.Context()))
+	r.False(IsStopping(tctx.Context(t)))
 }
 
 func TestNoGoroutinesOnIdle(t *testing.T) {
@@ -399,8 +400,8 @@ func TestWith(t *testing.T) {
 
 	type k string
 
-	c1 := context.WithValue(t.Context(), k("foo"), "bar")
-	c2 := context.WithValue(t.Context(), k("baz"), "quux")
+	c1 := context.WithValue(tctx.Context(t), k("foo"), "bar")
+	c2 := context.WithValue(tctx.Context(t), k("baz"), "quux")
 
 	a.NoError(Go(s.WithDelegate(c1), func(ctx Context) error {
 		a.NotSame(s, ctx)
@@ -467,7 +468,7 @@ func TestWaitInterrupt(t *testing.T) {
 	otherErr := errors.New("boom")
 	ctx.AddError(otherErr)
 
-	stdCtx, cancel := context.WithCancel(context.Background())
+	stdCtx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 	r.ErrorIs(ctx.WaitCtx(stdCtx), context.Canceled)
 	r.ErrorIs(ctx.WaitCtx(stdCtx), otherErr)
@@ -482,7 +483,7 @@ func TestWithMiddleware(t *testing.T) {
 	r := require.New(t)
 
 	var called atomic.Bool
-	ctx := WithContext(t.Context(),
+	ctx := WithContext(tctx.Context(t),
 		WithTaskOptions(TaskMiddleware(
 			func(outer Context) (Context, Invoker) {
 				return outer, func(ctx Context, task Func) error {

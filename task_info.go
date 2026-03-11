@@ -36,11 +36,11 @@ func TaskInfoFrom(ctx context.Context) (*TaskInfo, bool) {
 // MarshalJSON summarizes the TaskInfo.
 func (i *TaskInfo) MarshalJSON() (ret []byte, err error) {
 	p := struct {
-		ContextName string    `json:"contextName,omitzero"`
-		Error       string    `json:"error,omitzero"`
-		Started     time.Time `json:"started,omitzero"`
-		State       string    `json:"state,omitzero"`
-		TaskName    string    `json:"taskName,omitzero"`
+		ContextName string    `json:"contextName,omitempty"`
+		Error       string    `json:"error,omitempty"`
+		Started     time.Time `json:"started,omitempty"`
+		State       string    `json:"state,omitempty"`
+		TaskName    string    `json:"taskName,omitempty"`
 	}{
 		ContextName: i.ContextName,
 		Started:     i.Started,

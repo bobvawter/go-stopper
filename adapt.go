@@ -101,7 +101,7 @@ func GoN[A Adaptable](ctx context.Context, count int, fn A, opts ...TaskOption) 
 	}
 	f := Fn(fn) // Create wrapper once.
 	errs := make([]error, count)
-	for i := range count {
+	for i := 0; i < count; i++ {
 		errs[i] = s.Go(f, opts...)
 	}
 	return errors.Join(errs...)
