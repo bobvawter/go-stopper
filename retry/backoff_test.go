@@ -1,6 +1,8 @@
 // Copyright 2026 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build go1.25
+
 package retry
 
 import (
@@ -12,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 // TestBackoffDefaults verifies that the sanitize method applies
@@ -43,7 +46,7 @@ func TestBackoffExponentialDelay(t *testing.T) {
 			Multiplier:  2,
 		}
 
-		ctx := stopper.WithContext(t.Context(),
+		ctx := stopper.WithContext(tctx.Context(t),
 			stopper.WithTaskOptions(stopper.TaskMiddleware(b.Middleware())),
 		)
 		defer ctx.Stop()
@@ -100,7 +103,7 @@ func TestBackoffMaxAttempts(t *testing.T) {
 			Multiplier:  1,
 		}
 
-		ctx := stopper.WithContext(t.Context(),
+		ctx := stopper.WithContext(tctx.Context(t),
 			stopper.WithTaskOptions(stopper.TaskMiddleware(b.Middleware())),
 		)
 		defer ctx.Stop()
@@ -153,7 +156,7 @@ func TestBackoffMaxDelayCap(t *testing.T) {
 			Multiplier:  100, // Aggressive multiplier to hit cap fast.
 		}
 
-		ctx := stopper.WithContext(t.Context(),
+		ctx := stopper.WithContext(tctx.Context(t),
 			stopper.WithTaskOptions(stopper.TaskMiddleware(b.Middleware())),
 		)
 		defer ctx.Stop()
@@ -209,7 +212,7 @@ func TestBackoffNonRetryable(t *testing.T) {
 			},
 		}
 
-		ctx := stopper.WithContext(t.Context(),
+		ctx := stopper.WithContext(tctx.Context(t),
 			stopper.WithTaskOptions(stopper.TaskMiddleware(b.Middleware())),
 		)
 		defer ctx.Stop()
@@ -265,7 +268,7 @@ func TestBackoffStoppingDuringDelay(t *testing.T) {
 			MaxDelay: time.Hour,
 		}
 
-		ctx := stopper.WithContext(t.Context(),
+		ctx := stopper.WithContext(tctx.Context(t),
 			stopper.WithTaskOptions(stopper.TaskMiddleware(b.Middleware())),
 		)
 
@@ -301,7 +304,7 @@ func TestBackoffSuccessOnFirstAttempt(t *testing.T) {
 
 		b := &Backoff{}
 
-		ctx := stopper.WithContext(t.Context(),
+		ctx := stopper.WithContext(tctx.Context(t),
 			stopper.WithTaskOptions(stopper.TaskMiddleware(b.Middleware())),
 		)
 		defer ctx.Stop()

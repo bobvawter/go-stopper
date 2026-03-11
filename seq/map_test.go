@@ -1,6 +1,8 @@
 // Copyright 2026 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build go1.23
+
 package seq
 
 import (
@@ -16,6 +18,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 // --- Map ---
@@ -24,7 +27,7 @@ func TestMap(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3, 4, 5})
-	results := Map(t.Context(), items, 2,
+	results := Map(tctx.Context(t), items, 2,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			return v * 10, nil
 		},
@@ -39,7 +42,7 @@ func TestMap(t *testing.T) {
 }
 
 func TestMapCanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 
 	items := slices.Values([]int{1, 2, 3})
@@ -58,7 +61,7 @@ func TestMapEarlyBreak(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3, 4, 5})
-	results := Map(t.Context(), items, 1,
+	results := Map(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			return v * 10, nil
 		},
@@ -84,7 +87,7 @@ func TestMapConcurrencyBound(t *testing.T) {
 	var running atomic.Int32
 	var maxSeen atomic.Int32
 
-	results := Map(t.Context(), items, maxWorkers,
+	results := Map(tctx.Context(t), items, maxWorkers,
 		func(_ stopper.Context, _ int, _ int) (int, error) {
 			cur := running.Add(1)
 			defer running.Add(-1)
@@ -110,7 +113,7 @@ func TestMapEmpty(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{})
-	results := Map(t.Context(), items, 4,
+	results := Map(tctx.Context(t), items, 4,
 		func(_ stopper.Context, _ int, _ int) (int, error) {
 			t.Fatal("should not be called")
 			return 0, nil
@@ -130,7 +133,7 @@ func TestMapError(t *testing.T) {
 
 	errBad := errors.New("bad value")
 	items := slices.Values([]int{1, 2, 3})
-	results := Map(t.Context(), items, 1,
+	results := Map(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			if v == 2 {
 				return 0, errBad
@@ -158,7 +161,7 @@ func TestMapIndex(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]string{"a", "b", "c"})
-	results := Map(t.Context(), items, 1,
+	results := Map(tctx.Context(t), items, 1,
 		func(_ stopper.Context, idx int, v string) (string, error) {
 			return fmt.Sprintf("%d:%s", idx, v), nil
 		},
@@ -176,7 +179,7 @@ func TestMapOrdered(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3, 4, 5, 6, 7, 8})
-	results := Map(t.Context(), items, 4,
+	results := Map(tctx.Context(t), items, 4,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			// Varying delays to test ordering.
 			if v%2 == 0 {
@@ -198,7 +201,7 @@ func TestMapPanic(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]string{"a", "b", "c"})
-	results := Map(t.Context(), items, 1,
+	results := Map(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v string) (string, error) {
 			if v == "b" {
 				panic("boom")
@@ -222,7 +225,7 @@ func TestMapPanicError(t *testing.T) {
 
 	errBoom := errors.New("kaboom")
 	items := slices.Values([]int{1, 2, 3})
-	results := Map(t.Context(), items, 1,
+	results := Map(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			if v == 2 {
 				panic(errBoom)
@@ -245,7 +248,7 @@ func TestMapPanicAllWorkers(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3})
-	results := Map(t.Context(), items, 3,
+	results := Map(tctx.Context(t), items, 3,
 		func(_ stopper.Context, _ int, _ int) (int, error) {
 			panic("all workers panic")
 		},
@@ -265,7 +268,7 @@ func TestMapRepeatable(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3})
-	results := Map(t.Context(), items, 1,
+	results := Map(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			return v * 10, nil
 		},
@@ -285,7 +288,7 @@ func TestMapRepeatable(t *testing.T) {
 func TestMapSingleWorker(t *testing.T) {
 	r := require.New(t)
 
-	results := Map(t.Context(), yieldN(5), 1,
+	results := Map(tctx.Context(t), yieldN(5), 1,
 		func(_ stopper.Context, idx int, _ int) (int, error) {
 			return idx, nil
 		},
@@ -305,7 +308,7 @@ func TestMap2(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]string{"a", "b", "c"})
-	results := Map2(t.Context(), items, 2,
+	results := Map2(tctx.Context(t), items, 2,
 		func(_ stopper.Context, _ int, k int, v string) (string, error) {
 			return fmt.Sprintf("%d=%s", k, v), nil
 		},
@@ -323,7 +326,7 @@ func TestMap2EarlyBreak(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]string{"a", "b", "c", "d", "e"})
-	results := Map2(t.Context(), items, 1,
+	results := Map2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, v string) (string, error) {
 			return fmt.Sprintf("%d=%s", k, v), nil
 		},
@@ -341,7 +344,7 @@ func TestMap2EarlyBreak(t *testing.T) {
 }
 
 func TestMap2CanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 
 	items := slices.All([]int{1, 2, 3})
@@ -359,7 +362,7 @@ func TestMap2Empty(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]int{})
-	results := Map2(t.Context(), items, 4,
+	results := Map2(tctx.Context(t), items, 4,
 		func(_ stopper.Context, _ int, _ int, _ int) (int, error) {
 			t.Fatal("should not be called")
 			return 0, nil
@@ -379,7 +382,7 @@ func TestMap2Error(t *testing.T) {
 
 	errBad := errors.New("bad pair")
 	items := slices.All([]string{"a", "b", "c"})
-	results := Map2(t.Context(), items, 1,
+	results := Map2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, _ string) (string, error) {
 			if k == 1 {
 				return "", errBad
@@ -402,7 +405,7 @@ func TestMap2Ordered(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]int{10, 20, 30, 40})
-	results := Map2(t.Context(), items, 4,
+	results := Map2(tctx.Context(t), items, 4,
 		func(_ stopper.Context, _ int, k int, v int) (int, error) {
 			if k%2 == 0 {
 				time.Sleep(5 * time.Millisecond)
@@ -423,7 +426,7 @@ func TestMap2Panic(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]string{"a", "b", "c"})
-	results := Map2(t.Context(), items, 1,
+	results := Map2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, _ string) (string, error) {
 			if k == 1 {
 				panic("map2 boom")
@@ -447,7 +450,7 @@ func TestMap2PanicError(t *testing.T) {
 
 	errBoom := errors.New("map2 kaboom")
 	items := slices.All([]int{1, 2, 3})
-	results := Map2(t.Context(), items, 1,
+	results := Map2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, _ int) (int, error) {
 			if k == 1 {
 				panic(errBoom)
@@ -472,7 +475,7 @@ func TestMapUnordered(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3, 4, 5})
-	results := MapUnordered(t.Context(), items, 3,
+	results := MapUnordered(tctx.Context(t), items, 3,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			return v * 10, nil
 		},
@@ -491,7 +494,7 @@ func TestMapUnorderedEarlyBreak(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3, 4, 5})
-	results := MapUnordered(t.Context(), items, 1,
+	results := MapUnordered(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			return v * 10, nil
 		},
@@ -509,7 +512,7 @@ func TestMapUnorderedEarlyBreak(t *testing.T) {
 }
 
 func TestMapUnorderedCanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 
 	items := slices.Values([]int{1, 2, 3})
@@ -532,7 +535,7 @@ func TestMapUnorderedConcurrencyBound(t *testing.T) {
 	var running atomic.Int32
 	var maxSeen atomic.Int32
 
-	results := MapUnordered(t.Context(), items, maxWorkers,
+	results := MapUnordered(tctx.Context(t), items, maxWorkers,
 		func(_ stopper.Context, _ int, _ int) (int, error) {
 			cur := running.Add(1)
 			defer running.Add(-1)
@@ -558,7 +561,7 @@ func TestMapUnorderedEmpty(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{})
-	results := MapUnordered(t.Context(), items, 4,
+	results := MapUnordered(tctx.Context(t), items, 4,
 		func(_ stopper.Context, _ int, _ int) (int, error) {
 			t.Fatal("should not be called")
 			return 0, nil
@@ -578,7 +581,7 @@ func TestMapUnorderedError(t *testing.T) {
 
 	errBad := errors.New("unordered error")
 	items := slices.Values([]int{1, 2, 3})
-	results := MapUnordered(t.Context(), items, 1,
+	results := MapUnordered(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			if v == 2 {
 				return 0, errBad
@@ -601,7 +604,7 @@ func TestMapUnorderedPanic(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]string{"a", "b", "c"})
-	results := MapUnordered(t.Context(), items, 1,
+	results := MapUnordered(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v string) (string, error) {
 			if v == "b" {
 				panic("unordered boom")
@@ -625,7 +628,7 @@ func TestMapUnorderedPanicError(t *testing.T) {
 
 	errBoom := errors.New("unordered kaboom")
 	items := slices.Values([]int{1, 2, 3})
-	results := MapUnordered(t.Context(), items, 1,
+	results := MapUnordered(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, v int) (int, error) {
 			if v == 2 {
 				panic(errBoom)
@@ -648,7 +651,7 @@ func TestMapUnorderedPanicAllWorkers(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{1, 2, 3})
-	results := MapUnordered(t.Context(), items, 3,
+	results := MapUnordered(tctx.Context(t), items, 3,
 		func(_ stopper.Context, _ int, _ int) (int, error) {
 			panic("all unordered panic")
 		},
@@ -670,7 +673,7 @@ func TestMapUnordered2(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]string{"a", "b", "c"})
-	results := MapUnordered2(t.Context(), items, 3,
+	results := MapUnordered2(tctx.Context(t), items, 3,
 		func(_ stopper.Context, _ int, k int, v string) (string, error) {
 			return fmt.Sprintf("%d=%s", k, v), nil
 		},
@@ -689,7 +692,7 @@ func TestMapUnordered2EarlyBreak(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]string{"a", "b", "c", "d", "e"})
-	results := MapUnordered2(t.Context(), items, 1,
+	results := MapUnordered2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, v string) (string, error) {
 			return fmt.Sprintf("%d=%s", k, v), nil
 		},
@@ -707,7 +710,7 @@ func TestMapUnordered2EarlyBreak(t *testing.T) {
 }
 
 func TestMapUnordered2CanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 
 	items := slices.All([]int{1, 2, 3})
@@ -725,7 +728,7 @@ func TestMapUnordered2Empty(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]int{})
-	results := MapUnordered2(t.Context(), items, 4,
+	results := MapUnordered2(tctx.Context(t), items, 4,
 		func(_ stopper.Context, _ int, _ int, _ int) (int, error) {
 			t.Fatal("should not be called")
 			return 0, nil
@@ -745,7 +748,7 @@ func TestMapUnordered2Error(t *testing.T) {
 
 	errBad := errors.New("unordered2 error")
 	items := slices.All([]string{"a", "b", "c"})
-	results := MapUnordered2(t.Context(), items, 1,
+	results := MapUnordered2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, _ string) (string, error) {
 			if k == 1 {
 				return "", errBad
@@ -768,7 +771,7 @@ func TestMapUnordered2Panic(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.All([]string{"a", "b", "c"})
-	results := MapUnordered2(t.Context(), items, 1,
+	results := MapUnordered2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, _ string) (string, error) {
 			if k == 1 {
 				panic("unordered2 boom")
@@ -792,7 +795,7 @@ func TestMapUnordered2PanicError(t *testing.T) {
 
 	errBoom := errors.New("unordered2 kaboom")
 	items := slices.All([]int{1, 2, 3})
-	results := MapUnordered2(t.Context(), items, 1,
+	results := MapUnordered2(tctx.Context(t), items, 1,
 		func(_ stopper.Context, _ int, k int, _ int) (int, error) {
 			if k == 1 {
 				panic(errBoom)

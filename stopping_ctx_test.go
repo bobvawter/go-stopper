@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 func TestStoppingContext(t *testing.T) {
-	stdCtx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	stdCtx, cancel := context.WithTimeout(tctx.Context(t), 30*time.Second)
 	t.Cleanup(cancel)
 
 	type k struct{}

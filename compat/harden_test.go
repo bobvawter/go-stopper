@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/internal/tctx"
 )
 
 func TestHarden(t *testing.T) {
-	stdCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	stdCtx, cancel := context.WithTimeout(tctx.Context(t), 30*time.Second)
 	t.Cleanup(cancel)
 
 	ctx := WithContext(stdCtx)

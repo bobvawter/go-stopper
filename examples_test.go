@@ -114,12 +114,10 @@ func Example_workPool() {
 			// Push back on calls to Go() to limit total number of workers.
 			stopper.TaskMiddleware(limit.WithMaxConcurrency(10)),
 		))
-	for range 20 {
-		_ = stopper.Go(childCtx, func() error {
-			count.Add(1)
-			return nil
-		})
-	}
+	_ = stopper.GoN(childCtx, 20, func() error {
+		count.Add(1)
+		return nil
+	})
 	// Make childCtx stop automatically. If the worker tasks above were
 	// to create additional tasks or additional nested stoppers,
 	// childCtx would wait for them to finish, too.

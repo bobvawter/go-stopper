@@ -1,6 +1,8 @@
 // Copyright 2026 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build go1.23
+
 package seq_test
 
 import (

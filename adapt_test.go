@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 func TestAdapt(t *testing.T) {
@@ -42,7 +43,7 @@ func TestAdapt(t *testing.T) {
 
 func TestNoStopper(t *testing.T) {
 	r := require.New(t)
-	ctx := t.Context()
+	ctx := tctx.Context(t)
 	r.ErrorIs(Call(ctx, func() {}), ErrNoStopper)
 	deferred, err := Defer(ctx, func() {})
 	r.False(deferred)
@@ -53,7 +54,7 @@ func TestNoStopper(t *testing.T) {
 
 func TestGoN(t *testing.T) {
 	r := require.New(t)
-	s := WithContext(t.Context())
+	s := WithContext(tctx.Context(t))
 	defer s.Stop()
 
 	var count atomic.Int32

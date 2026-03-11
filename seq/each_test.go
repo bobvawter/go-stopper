@@ -1,6 +1,8 @@
 // Copyright 2026 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build go1.23
+
 package seq
 
 import (
@@ -15,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 func TestForEach(t *testing.T) {
@@ -24,7 +27,7 @@ func TestForEach(t *testing.T) {
 
 	var mu sync.Mutex
 	var collected []string
-	err := ForEach(t.Context(), items, 2, func(_ stopper.Context, _ int, v string) error {
+	err := ForEach(tctx.Context(t), items, 2, func(_ stopper.Context, _ int, v string) error {
 		mu.Lock()
 		defer mu.Unlock()
 		collected = append(collected, v)
@@ -49,7 +52,7 @@ func TestForEach2(t *testing.T) {
 
 	var mu sync.Mutex
 	collected := make(map[string]int)
-	err := ForEach2(t.Context(), items, 3, func(_ stopper.Context, _ int, k string, v int) error {
+	err := ForEach2(tctx.Context(t), items, 3, func(_ stopper.Context, _ int, k string, v int) error {
 		mu.Lock()
 		defer mu.Unlock()
 		collected[k] = v
@@ -60,7 +63,7 @@ func TestForEach2(t *testing.T) {
 }
 
 func TestForEach2CanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 
 	items := func(yield func(int, int) bool) {
@@ -81,7 +84,7 @@ func TestForEach2Empty(t *testing.T) {
 	r := require.New(t)
 
 	items := func(yield func(string, int) bool) {}
-	err := ForEach2(t.Context(), items, 4, func(_ stopper.Context, _ int, _ string, _ int) error {
+	err := ForEach2(tctx.Context(t), items, 4, func(_ stopper.Context, _ int, _ string, _ int) error {
 		t.Fatal("should not be called")
 		return nil
 	})
@@ -101,7 +104,7 @@ func TestForEach2ErrorAggregation(t *testing.T) {
 		}
 	}
 
-	err := ForEach2(t.Context(), items, 5, func(_ stopper.Context, _ int, k int, _ int) error {
+	err := ForEach2(tctx.Context(t), items, 5, func(_ stopper.Context, _ int, k int, _ int) error {
 		if k == 2 {
 			return errX
 		}
@@ -118,7 +121,7 @@ func TestForEach2Panic(t *testing.T) {
 		_ = yield("a", 1) && yield("b", 2) && yield("c", 3)
 	}
 
-	err := ForEach2(t.Context(), items, 1, func(_ stopper.Context, _ int, k string, _ int) error {
+	err := ForEach2(tctx.Context(t), items, 1, func(_ stopper.Context, _ int, k string, _ int) error {
 		if k == "b" {
 			panic("boom")
 		}
@@ -137,7 +140,7 @@ func TestForEach2PanicError(t *testing.T) {
 		_ = yield(0, 10) && yield(1, 20)
 	}
 
-	err := ForEach2(t.Context(), items, 1, func(_ stopper.Context, _ int, k int, _ int) error {
+	err := ForEach2(tctx.Context(t), items, 1, func(_ stopper.Context, _ int, k int, _ int) error {
 		if k == 1 {
 			panic(errBoom)
 		}
@@ -164,7 +167,7 @@ func TestForEach2Index(t *testing.T) {
 
 	var mu sync.Mutex
 	idxMap := make(map[int]string)
-	err := ForEach2(t.Context(), items, 1, func(_ stopper.Context, idx int, k string, _ int) error {
+	err := ForEach2(tctx.Context(t), items, 1, func(_ stopper.Context, idx int, k string, _ int) error {
 		mu.Lock()
 		defer mu.Unlock()
 		idxMap[idx] = k
@@ -182,7 +185,7 @@ func TestForEach2SliceAll(t *testing.T) {
 
 	var mu sync.Mutex
 	collected := make(map[int]string)
-	err := ForEach2(t.Context(), items, 3, func(_ stopper.Context, _ int, k int, v string) error {
+	err := ForEach2(tctx.Context(t), items, 3, func(_ stopper.Context, _ int, k int, v string) error {
 		mu.Lock()
 		defer mu.Unlock()
 		collected[k] = v
@@ -193,7 +196,7 @@ func TestForEach2SliceAll(t *testing.T) {
 }
 
 func TestForEachCanceledContext(t *testing.T) {
-	ctx, cancel := context.WithCancel(t.Context())
+	ctx, cancel := context.WithCancel(tctx.Context(t))
 	cancel()
 
 	items := slices.Values([]int{1, 2, 3})
@@ -213,7 +216,7 @@ func TestForEachConcurrencyBound(t *testing.T) {
 	var running atomic.Int32
 	var maxSeen atomic.Int32
 
-	err := ForEach(t.Context(), items, maxWorkers, func(_ stopper.Context, _ int, _ int) error {
+	err := ForEach(tctx.Context(t), items, maxWorkers, func(_ stopper.Context, _ int, _ int) error {
 		cur := running.Add(1)
 		defer running.Add(-1)
 		for {
@@ -234,7 +237,7 @@ func TestForEachEmpty(t *testing.T) {
 	r := require.New(t)
 
 	items := slices.Values([]int{})
-	err := ForEach(t.Context(), items, 4, func(_ stopper.Context, _ int, _ int) error {
+	err := ForEach(tctx.Context(t), items, 4, func(_ stopper.Context, _ int, _ int) error {
 		t.Fatal("should not be called")
 		return nil
 	})
@@ -246,7 +249,7 @@ func TestForEachPanic(t *testing.T) {
 
 	items := slices.Values([]string{"a", "b", "c"})
 
-	err := ForEach(t.Context(), items, 1, func(_ stopper.Context, _ int, v string) error {
+	err := ForEach(tctx.Context(t), items, 1, func(_ stopper.Context, _ int, v string) error {
 		if v == "b" {
 			panic("boom")
 		}
@@ -263,7 +266,7 @@ func TestForEachPanicError(t *testing.T) {
 
 	items := slices.Values([]int{1, 2, 3})
 
-	err := ForEach(t.Context(), items, 1, func(_ stopper.Context, _ int, v int) error {
+	err := ForEach(tctx.Context(t), items, 1, func(_ stopper.Context, _ int, v int) error {
 		if v == 2 {
 			panic(errBoom)
 		}
@@ -280,7 +283,7 @@ func TestForEachErrorAggregation(t *testing.T) {
 	errB := errors.New("error b")
 
 	items := slices.Values([]int{0, 1, 2, 3})
-	err := ForEach(t.Context(), items, 4, func(_ stopper.Context, idx int, _ int) error {
+	err := ForEach(tctx.Context(t), items, 4, func(_ stopper.Context, idx int, _ int) error {
 		switch idx {
 		case 1:
 			return errA
@@ -302,7 +305,7 @@ func TestForEachIndex(t *testing.T) {
 
 	var mu sync.Mutex
 	idxMap := make(map[int]string)
-	err := ForEach(t.Context(), items, 1, func(_ stopper.Context, idx int, v string) error {
+	err := ForEach(tctx.Context(t), items, 1, func(_ stopper.Context, idx int, v string) error {
 		mu.Lock()
 		defer mu.Unlock()
 		idxMap[idx] = v
@@ -316,7 +319,7 @@ func TestForEachSingleWorker(t *testing.T) {
 	r := require.New(t)
 
 	var order []int
-	err := ForEach(t.Context(), yieldN(5), 1, func(_ stopper.Context, idx int, _ int) error {
+	err := ForEach(tctx.Context(t), yieldN(5), 1, func(_ stopper.Context, idx int, _ int) error {
 		order = append(order, idx)
 		return nil
 	})
@@ -331,7 +334,7 @@ func TestForEachSliceSeq(t *testing.T) {
 	items := slices.Values(source)
 
 	var sum atomic.Int64
-	err := ForEach(t.Context(), items, 3, func(_ stopper.Context, _ int, v int) error {
+	err := ForEach(tctx.Context(t), items, 3, func(_ stopper.Context, _ int, v int) error {
 		sum.Add(int64(v))
 		return nil
 	})

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"vawter.tech/stopper"
+	"vawter.tech/stopper/internal/tctx"
 	"vawter.tech/stopper/linger"
 )
 
@@ -16,7 +17,7 @@ func NewStopperForTest(t *testing.T) *stopper.Context {
 	const grace = 5 * time.Second
 
 	// Impose a per-test timout.
-	stdCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	stdCtx, cancel := context.WithTimeout(tctx.Context(t), 30*time.Second)
 	t.Cleanup(cancel)
 
 	// Add tracking for where goroutine tasks are started.

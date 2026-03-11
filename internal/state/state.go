@@ -7,7 +7,6 @@ package state
 
 import (
 	"errors"
-	"iter"
 	"slices"
 	"sync"
 	"time"
@@ -173,27 +172,9 @@ func (s *State) AddErrors(errs ...error) {
 }
 
 // Config returns the configuration object passed to [New]. The returned
-// value may be nil. To inspect all configuration objects in the State
-// chain, use [State.Configs].
+// value may be nil.
 func (s *State) Config() any {
 	return s.config
-}
-
-// Configs yields any non-nil configuration in the State chain.
-func (s *State) Configs() iter.Seq[any] {
-	return func(yield func(any) bool) {
-		stack := make([]*State, 0, 8)
-		for ptr := s; ptr != nil; ptr = ptr.parent {
-			stack = append(stack, ptr)
-		}
-		for i := len(stack) - 1; i >= 0; i-- {
-			if cfg := stack[i].config; cfg != nil {
-				if !yield(cfg) {
-					return
-				}
-			}
-		}
-	}
 }
 
 // Errors will return a clone of the internal slice.

@@ -1,6 +1,8 @@
 // Copyright 2025 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
+//go:build go1.24
+
 package stopper_test
 
 import (

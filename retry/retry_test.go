@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2"
+	"vawter.tech/stopper/v2/internal/tctx"
 )
 
 // TestChannelCloseAbandon verifies that closing the retry channel
@@ -24,7 +25,7 @@ func TestChannelCloseAbandon(t *testing.T) {
 		return ch, nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 	defer ctx.Stop()
@@ -44,7 +45,7 @@ func TestClassifierEatsError(t *testing.T) {
 		return nil, nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 	defer ctx.Stop()
@@ -65,7 +66,7 @@ func TestClassifierRejects(t *testing.T) {
 		return nil, rejectErr
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 	defer ctx.Stop()
@@ -86,7 +87,7 @@ func TestContextDone(t *testing.T) {
 		return make(chan struct{}), nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 		stopper.WithGracePeriod(time.Millisecond),
 	)
@@ -110,7 +111,7 @@ func TestRetrySuccess(t *testing.T) {
 		return ch, nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 	defer ctx.Stop()
@@ -142,7 +143,7 @@ func TestStateAccumulates(t *testing.T) {
 		return ch, nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 	defer ctx.Stop()
@@ -166,7 +167,7 @@ func TestStoppingDuringWait(t *testing.T) {
 		return make(chan struct{}), nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 
@@ -190,7 +191,7 @@ func TestTaskSucceeds(t *testing.T) {
 		return nil, nil
 	}
 
-	ctx := stopper.WithContext(t.Context(),
+	ctx := stopper.WithContext(tctx.Context(t),
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 	)
 	defer ctx.Stop()
