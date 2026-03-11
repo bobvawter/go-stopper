@@ -261,7 +261,7 @@ func WithContext(ctx context.Context, opts ...ConfigOption) Context {
 	// pointers are necessary since context.AfterFunc() will fire in a
 	// separate goroutine.
 	if parent != nil {
-		parentCleanupFn := parent.AddStopHook(func() { s.Stop() })
+		parentCleanupFn := parent.AddStopHook(s.st, func() { s.Stop() })
 		parentCleanup.Store(&parentCleanupFn)
 	}
 	afterCleanupFn := context.AfterFunc(ctx, func() { s.Stop() })
