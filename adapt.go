@@ -63,7 +63,7 @@ func Call[A Adaptable](ctx context.Context, fn A, opts ...TaskOption) error {
 	if !ok {
 		return ErrNoStopper
 	}
-	return s.Call(Fn(fn), opts...)
+	return s.Call(Fn(fn), append(opts, withCallerOffset(1))...)
 }
 
 // Defer is a convenience adaptor to invoke [Context.Defer] on any
@@ -87,7 +87,7 @@ func Go[A Adaptable](ctx context.Context, fn A, opts ...TaskOption) error {
 	if !ok {
 		return ErrNoStopper
 	}
-	return s.Go(Fn(fn), opts...)
+	return s.Go(Fn(fn), append(opts, withCallerOffset(1))...)
 }
 
 // GoN is a convenience adaptor to repeatedly invoke [Context.Go] on any
@@ -102,7 +102,7 @@ func GoN[A Adaptable](ctx context.Context, count int, fn A, opts ...TaskOption) 
 	f := Fn(fn) // Create wrapper once.
 	errs := make([]error, count)
 	for i := 0; i < count; i++ {
-		errs[i] = s.Go(f, opts...)
+		errs[i] = s.Go(f, append(opts, withCallerOffset(1))...)
 	}
 	return errors.Join(errs...)
 }

@@ -371,12 +371,30 @@ func TestTaskInfoFromDefaults(t *testing.T) {
 		return nil
 	}))
 
-	_, goFile, goLine, _ := runtime.Caller(0)
+	_, callFile, callLine, _ = runtime.Caller(0)
+	r.NoError(Call(s, func(ctx Context) error {
+		info, ok := TaskInfoFrom(ctx)
+		r.True(ok)
+		r.True(strings.Contains(info.Group.Name, fmt.Sprintf("%s:%d", newFile, newLine+1)))
+		r.True(strings.Contains(info.TaskName, fmt.Sprintf("%s:%d", callFile, callLine+1)))
+		return nil
+	}))
+
+	_, goMethodFile, goMethodLine, _ := runtime.Caller(0)
 	r.NoError(s.Go(func(ctx Context) error {
 		info, ok := TaskInfoFrom(ctx)
 		r.True(ok)
 		r.True(strings.Contains(info.Group.Name, fmt.Sprintf("%s:%d", newFile, newLine+1)))
-		r.True(strings.Contains(info.TaskName, fmt.Sprintf("%s:%d", goFile, goLine+1)))
+		r.True(strings.Contains(info.TaskName, fmt.Sprintf("%s:%d", goMethodFile, goMethodLine+1)))
+		return nil
+	}))
+
+	_, goHelperFile, goHelperLine, _ := runtime.Caller(0)
+	r.NoError(Go(s, func(ctx Context) error {
+		info, ok := TaskInfoFrom(ctx)
+		r.True(ok)
+		r.True(strings.Contains(info.Group.Name, fmt.Sprintf("%s:%d", newFile, newLine+1)))
+		r.True(strings.Contains(info.TaskName, fmt.Sprintf("%s:%d", goHelperFile, goHelperLine+1)))
 		return nil
 	}))
 
