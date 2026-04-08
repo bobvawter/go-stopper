@@ -39,6 +39,10 @@ APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
   `errors.As(err, &re)` to extract the `RecoveredError` and inspect
   its `Stack` field or call its `String()` method for a human-readable
   trace.
+* **Observability** – every `Context` is associated with a `TaskGroup`
+  providing real-time visibility into the task hierarchy. Use
+  `TaskGroupFrom(ctx)` and `TaskInfoFrom(ctx)` to inspect active tasks
+  and their states.
 * **Always-on `runtime/trace`** – every stopper `Context` and every
   task automatically creates a `runtime/trace.Task`, so the full
   hierarchy appears in Go execution traces with zero extra code.

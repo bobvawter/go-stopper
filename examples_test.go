@@ -496,15 +496,28 @@ func ExampleContext_tracing() {
 func ExampleTaskInfo() {
 	ctx := stopper.New(stopper.WithName("outer"))
 	nested := stopper.WithContext(ctx, stopper.WithName("inner"))
+
 	_ = stopper.Call(nested,
 		func(ctx context.Context) {
+			// Retrieve info about the current task.
 			if info, ok := stopper.TaskInfoFrom(ctx); ok {
-				fmt.Println(info.ContextName)
-				fmt.Println(info.TaskName)
+				fmt.Println("Task Group:", info.Group.Name)
+				fmt.Println("Task Name:", info.TaskName)
+			}
+
+			// Access the group hierarchy.
+			if group, ok := stopper.TaskGroupFrom(ctx); ok {
+				fmt.Println("Group Name:", group.Name)
+				if group.Parent != nil {
+					fmt.Println("Parent Group:", group.Parent.Name)
+				}
 			}
 		},
 		stopper.TaskName("my-task"))
+
 	// Output:
-	// outer.inner
-	// my-task
+	// Task Group: outer.inner
+	// Task Name: my-task
+	// Group Name: outer.inner
+	// Parent Group: outer
 }

@@ -7,12 +7,48 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"vawter.tech/stopper/v2/internal/tctx"
 )
+
+func TestTaskGroupMarshalJSON(t *testing.T) {
+	r := require.New(t)
+	parent := &TaskGroup{Name: "parent"}
+	child := &TaskGroup{Name: "child", Parent: parent}
+	parent.children.Store(child, struct{}{})
+
+	info := &TaskInfo{
+		Group:    parent,
+		TaskName: "task",
+	}
+	parent.tasks.Store(info, struct{}{})
+
+	data, err := json.Marshal(parent)
+	r.NoError(err)
+
+	var m map[string]any
+	r.NoError(json.Unmarshal(data, &m))
+	r.Equal("parent", m["name"])
+
+	children := m["children"].([]any)
+	r.Len(children, 1)
+	r.Equal("child", children[0].(map[string]any)["name"])
+
+	tasks := m["tasks"].([]any)
+	r.Len(tasks, 1)
+	r.Equal("task", tasks[0].(map[string]any)["taskName"])
+}
+
+func TestTaskGroupString(t *testing.T) {
+	r := require.New(t)
+	g := &TaskGroup{Name: "foo"}
+	r.Equal("foo", g.String())
+}
 
 func TestTaskInfoMarshalJSON(t *testing.T) {
 	r := require.New(t)
@@ -21,9 +57,11 @@ func TestTaskInfoMarshalJSON(t *testing.T) {
 	t.Run("running", func(t *testing.T) {
 		r := require.New(t)
 		info := &TaskInfo{
-			ContextName: "ctx",
-			Started:     started,
-			TaskName:    "task",
+			Group: &TaskGroup{
+				Name: "ctx",
+			},
+			Started:  started,
+			TaskName: "task",
 		}
 		data, err := info.MarshalJSON()
 		r.NoError(err)
@@ -39,9 +77,11 @@ func TestTaskInfoMarshalJSON(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		r := require.New(t)
 		info := &TaskInfo{
-			ContextName: "ctx",
-			Started:     started,
-			TaskName:    "task",
+			Group: &TaskGroup{
+				Name: "ctx",
+			},
+			Started:  started,
+			TaskName: "task",
 		}
 		var nilErr error
 		info.Error.Store(&nilErr)
@@ -58,9 +98,11 @@ func TestTaskInfoMarshalJSON(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		r := require.New(t)
 		info := &TaskInfo{
-			ContextName: "ctx",
-			Started:     started,
-			TaskName:    "task",
+			Group: &TaskGroup{
+				Name: "ctx",
+			},
+			Started:  started,
+			TaskName: "task",
 		}
 		taskErr := fmt.Errorf("boom")
 		info.Error.Store(&taskErr)
@@ -76,9 +118,11 @@ func TestTaskInfoMarshalJSON(t *testing.T) {
 
 	// Verify round-trip through json.Marshal uses MarshalJSON.
 	info := &TaskInfo{
-		ContextName: "rt",
-		Started:     started,
-		TaskName:    "rt-task",
+		Group: &TaskGroup{
+			Name: "ctx",
+		},
+		Started:  started,
+		TaskName: "rt-task",
 	}
 	data, err := json.Marshal(info)
 	r.NoError(err)
@@ -91,9 +135,11 @@ func TestTaskInfoString(t *testing.T) {
 	t.Run("running", func(t *testing.T) {
 		r := require.New(t)
 		info := &TaskInfo{
-			ContextName: "ctx",
-			Started:     started,
-			TaskName:    "task",
+			Group: &TaskGroup{
+				Name: "ctx",
+			},
+			Started:  started,
+			TaskName: "task",
 		}
 		s := info.String()
 		r.Contains(s, "ctx.task")
@@ -103,9 +149,11 @@ func TestTaskInfoString(t *testing.T) {
 	t.Run("success", func(t *testing.T) {
 		r := require.New(t)
 		info := &TaskInfo{
-			ContextName: "ctx",
-			Started:     started,
-			TaskName:    "task",
+			Group: &TaskGroup{
+				Name: "ctx",
+			},
+			Started:  started,
+			TaskName: "task",
 		}
 		var nilErr error
 		info.Error.Store(&nilErr)
@@ -116,9 +164,11 @@ func TestTaskInfoString(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		r := require.New(t)
 		info := &TaskInfo{
-			ContextName: "ctx",
-			Started:     started,
-			TaskName:    "task",
+			Group: &TaskGroup{
+				Name: "ctx",
+			},
+			Started:  started,
+			TaskName: "task",
 		}
 		taskErr := fmt.Errorf("boom")
 		info.Error.Store(&taskErr)
@@ -135,7 +185,7 @@ func TestTaskInfoFrom(t *testing.T) {
 	r.NoError(s.Call(func(ctx Context) error {
 		info, ok := TaskInfoFrom(ctx)
 		r.True(ok)
-		r.Equal("my-ctx", info.ContextName)
+		r.Equal("my-ctx", info.Group.Name)
 		r.Equal("my-task", info.TaskName)
 		r.NotSame(info.Context, ctx)
 		r.NotNil(info.Task)
@@ -181,7 +231,7 @@ func TestTaskInfoFromMiddleware(t *testing.T) {
 	}, TaskName("mw-task"), TaskMiddleware(mw))
 
 	r.NotNil(seen)
-	r.Equal("mw-ctx", seen.ContextName)
+	r.Equal("mw-ctx", seen.Group.Name)
 	r.Equal("mw-task", seen.TaskName)
 	r.False(seen.Started.IsZero())
 
@@ -231,7 +281,7 @@ func TestTaskInfoFromMiddlewarePanic(t *testing.T) {
 	}, TaskName("panic-task"), TaskMiddleware(mw))
 
 	r.NotNil(seen)
-	r.Equal("panic-ctx", seen.ContextName)
+	r.Equal("panic-ctx", seen.Group.Name)
 	r.Equal("panic-task", seen.TaskName)
 
 	// Done channel must be closed after Call returns.
@@ -259,16 +309,34 @@ func TestTaskInfoFromNested(t *testing.T) {
 	r := require.New(t)
 
 	parent := New(WithName("parent"))
+	parentGroup, ok := TaskGroupFrom(parent)
+	r.True(ok)
+
 	child := WithContext(parent, WithName("child"))
+	childGroup, ok := TaskGroupFrom(child)
+	r.True(ok)
+	r.Same(parentGroup, childGroup.Parent)
+
+	children := parentGroup.Children(nil)
+	r.Len(children, 1)
+	r.Same(childGroup, children[0])
 
 	r.NoError(child.Call(func(ctx Context) error {
 		info, ok := TaskInfoFrom(ctx)
 		r.True(ok)
-		r.Equal("parent.child", info.ContextName)
+
+		r.Equal("parent.child", info.Group.Name)
+		r.Same(childGroup, info.Group)
+		tasks := info.Group.Tasks(nil)
+		r.Len(tasks, 1)
+		r.Same(info, tasks[0])
+
 		r.Equal("nested-task", info.TaskName)
 		return nil
 	}, TaskName("nested-task")))
 
+	child.Stop()
+	r.Empty(parentGroup.Children(nil))
 	parent.Stop()
 	_ = parent.Wait()
 }
@@ -291,16 +359,27 @@ func TestTaskInfoFromContextNoTaskInfo(t *testing.T) {
 func TestTaskInfoFromDefaults(t *testing.T) {
 	r := require.New(t)
 
+	_, newFile, newLine, _ := runtime.Caller(0)
 	s := New()
 
+	_, callFile, callLine, _ := runtime.Caller(0)
 	r.NoError(s.Call(func(ctx Context) error {
 		info, ok := TaskInfoFrom(ctx)
 		r.True(ok)
-		r.Equal("stopper", info.ContextName)
-		r.Equal("task", info.TaskName)
+		r.True(strings.Contains(info.Group.Name, fmt.Sprintf("%s:%d", newFile, newLine+1)))
+		r.True(strings.Contains(info.TaskName, fmt.Sprintf("%s:%d", callFile, callLine+1)))
+		return nil
+	}))
+
+	_, goFile, goLine, _ := runtime.Caller(0)
+	r.NoError(s.Go(func(ctx Context) error {
+		info, ok := TaskInfoFrom(ctx)
+		r.True(ok)
+		r.True(strings.Contains(info.Group.Name, fmt.Sprintf("%s:%d", newFile, newLine+1)))
+		r.True(strings.Contains(info.TaskName, fmt.Sprintf("%s:%d", goFile, goLine+1)))
 		return nil
 	}))
 
 	s.Stop()
-	_ = s.Wait()
+	r.NoError(s.Wait())
 }
