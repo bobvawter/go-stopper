@@ -5,6 +5,7 @@ package state
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -220,6 +221,54 @@ func TestApplyPropagatesToParent(t *testing.T) {
 	a.Equal(0, parent.Len())
 }
 
+// TestDeadlockStopApply is a brute-force approach to testing interplay
+// between the Stop() and Apply() methods.
+func TestDeadlockStopApply(t *testing.T) {
+	r := require.New(t)
+	for i := 0; i < 1000; i++ {
+		parent := New(func(error) {}, nil, nil)
+		child := New(func(error) {}, nil, parent)
+
+		parent.AddStopHook(child, func() {
+			child.Stop(0)
+		})
+
+		var wg sync.WaitGroup
+		wg.Add(4)
+
+		start := make(chan struct{})
+
+		for j := 0; j < 2; j++ {
+			go func() {
+				defer wg.Done()
+				<-start
+				parent.Stop(0)
+			}()
+			go func() {
+				defer wg.Done()
+				<-start
+				_ = child.Apply(1)
+			}()
+		}
+
+		close(start)
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+			// success
+		case <-time.After(100 * time.Millisecond):
+			r.Fail("Deadlock detected!")
+			return
+		}
+	}
+}
+
 func TestErrors(t *testing.T) {
 	a := assert.New(t)
 
@@ -253,7 +302,8 @@ func TestAddStopHookCalledOnStop(t *testing.T) {
 	cancel := parent.AddStopHook(child, func() { called = true })
 	r.False(called)
 
-	parent.softStopLocked(time.Duration(0))
+	deferred := parent.softStopLocked(time.Duration(0))
+	parent.callDeferred(deferred)
 	r.True(called)
 	r.NotPanics(cancel)
 }
@@ -261,7 +311,8 @@ func TestAddStopHookCalledOnStop(t *testing.T) {
 func TestAddStopHookCalledImmediatelyWhenAlreadyStopping(t *testing.T) {
 	r := require.New(t)
 	parent := New(func(error) {}, nil, nil)
-	parent.softStopLocked(time.Duration(0))
+	deferred := parent.softStopLocked(time.Duration(0))
+	parent.callDeferred(deferred)
 
 	child := New(func(error) {}, nil, parent)
 	called := false
@@ -280,7 +331,8 @@ func TestAddStopHookCancelRemovesHook(t *testing.T) {
 	cancel := parent.AddStopHook(child, func() { called = true })
 	cancel()
 
-	parent.softStopLocked(time.Duration(0))
+	deferred := parent.softStopLocked(time.Duration(0))
+	parent.callDeferred(deferred)
 	r.False(called)
 	r.NotPanics(cancel)
 }
@@ -291,7 +343,8 @@ func TestAddStopHookCancelSafeAfterStop(t *testing.T) {
 	child := New(func(error) {}, nil, parent)
 	called := false
 	cancel := parent.AddStopHook(child, func() { called = true })
-	parent.softStopLocked(time.Duration(0))
+	deferred := parent.softStopLocked(time.Duration(0))
+	parent.callDeferred(deferred)
 	r.True(called)
 	// Should not panic or deadlock.
 	r.NotPanics(cancel)
