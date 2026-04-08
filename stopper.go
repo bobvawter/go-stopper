@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime"
 	"runtime/trace"
 	"sync/atomic"
 	"time"
@@ -204,7 +205,11 @@ func IsStopping(ctx context.Context) bool {
 
 // New returns a ready-to-use Context.
 func New(opts ...ConfigOption) Context {
-	return WithContext(context.Background(), opts...)
+	partial := &config{}
+	for _, opt := range opts {
+		opt(partial)
+	}
+	return newContext(context.Background(), partial)
 }
 
 // WithContext creates a new Context whose work will be immediately
@@ -212,24 +217,45 @@ func New(opts ...ConfigOption) Context {
 // is a stopper [Context], the newly constructed stopper will be a child
 // of the pre-existing stopper.
 func WithContext(ctx context.Context, opts ...ConfigOption) Context {
+	partial := &config{}
+	for _, opt := range opts {
+		opt(partial)
+	}
+	return newContext(ctx, partial)
+}
+
+func newContext(ctx context.Context, partial *config) Context {
 	var parent *state.State
 	if i, ok := ctx.Value(implKey{}).(*impl); ok {
 		parent = i.st
 	}
 
-	// Flatten and merge configuration data.
-	next := &config{}
-	for _, opt := range opts {
-		opt(next)
+	if partial.name == "" {
+		if _, file, line, ok := runtime.Caller(2); ok {
+			partial.name = fmt.Sprintf("%s:%d", file, line)
+		}
 	}
 	var cfg *config
 	if parent == nil {
-		cfg = &config{}
+		cfg = partial
 	} else {
 		cfg = parent.Config().(*config).Clone()
+		cfg.Merge(partial)
 	}
-	cfg.Merge(next)
 	cfg.Sanitize()
+
+	if cfg.noTaskInfo {
+		cfg.group = nil
+	} else {
+		parentGroup := cfg.group
+		cfg.group = &TaskGroup{
+			Name:   cfg.name,
+			Parent: parentGroup,
+		}
+		if parentGroup != nil {
+			parentGroup.children.Store(cfg.group, struct{}{})
+		}
+	}
 
 	ctx, traceTask := trace.NewTask(ctx, cfg.name)
 	ctx, cancel := context.WithCancelCause(ctx)
@@ -249,6 +275,9 @@ func WithContext(ctx context.Context, opts ...ConfigOption) Context {
 		}
 		cancel(err)
 		traceTask.End()
+		if cfg.group != nil && cfg.group.Parent != nil {
+			cfg.group.Parent.children.Delete(cfg.group)
+		}
 	}
 
 	s := &impl{
@@ -261,7 +290,7 @@ func WithContext(ctx context.Context, opts ...ConfigOption) Context {
 	// pointers are necessary since context.AfterFunc() will fire in a
 	// separate goroutine.
 	if parent != nil {
-		parentCleanupFn := parent.AddStopHook(func() { s.Stop() })
+		parentCleanupFn := parent.AddStopHook(s.st, func() { s.Stop() })
 		parentCleanup.Store(&parentCleanupFn)
 	}
 	afterCleanupFn := context.AfterFunc(ctx, func() { s.Stop() })
@@ -360,6 +389,8 @@ func (c *impl) Value(key any) any {
 		return Context(c)
 	case implKey:
 		return c
+	case taskGroupKey:
+		return c.config().group
 	default:
 		return c.delegate.Value(key)
 	}
@@ -403,18 +434,20 @@ func (c *impl) taskInvoker(task Func, returnErr bool, opts []TaskOption) func() 
 	iCtx = iCtx.WithDelegate(traceCtx)
 
 	// Optionally, inject TaskInfo at the root for Middleware.
+	taskGroup := ctxCfg.group
 	var taskDone chan struct{}
 	var taskInfo *TaskInfo
-	if !ctxCfg.noTaskInfo {
+	if taskGroup != nil {
 		taskDone = make(chan struct{})
 		taskInfo = &TaskInfo{
-			Context:     c,
-			ContextName: ctxCfg.name,
-			Done:        taskDone,
-			Started:     time.Now(),
-			Task:        task,
-			TaskName:    taskCfg.name,
+			Context:  c,
+			Done:     taskDone,
+			Group:    taskGroup,
+			Started:  time.Now(),
+			Task:     task,
+			TaskName: taskCfg.name,
 		}
+		taskGroup.tasks.Store(taskInfo, struct{}{})
 		iCtx = iCtx.WithDelegate(
 			context.WithValue(iCtx, taskInfoKey{}, taskInfo))
 	}
@@ -439,6 +472,9 @@ func (c *impl) taskInvoker(task Func, returnErr bool, opts []TaskOption) func() 
 
 	return func() error {
 		defer traceTask.End()
+		if taskGroup != nil {
+			defer taskGroup.tasks.Delete(taskInfo)
+		}
 		if taskDone != nil {
 			defer close(taskDone)
 		}

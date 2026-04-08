@@ -38,6 +38,7 @@ func ExampleBackoff() {
 		// could be attached to the stopper instead of the task
 		// invocation.
 		stopper.TaskMiddleware(mw),
+		stopper.TaskName("task"),
 	)
 
 	ctx.Stop(stopper.StopOnIdle(), stopper.StopGracePeriod(time.Hour))
@@ -72,6 +73,7 @@ func ExampleLoop() {
 		// could be attached to the stopper instead of the task
 		// invocation.
 		stopper.TaskMiddleware(mw),
+		stopper.TaskName("task"),
 	)
 
 	ctx.Stop(stopper.StopOnIdle(), stopper.StopGracePeriod(time.Hour))

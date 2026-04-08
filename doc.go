@@ -123,7 +123,24 @@
 // annotate blocking waits with [runtime/trace.StartRegion], making it
 // easy to spot concurrency bottlenecks, rate-limit pauses, and retry
 // delays in the trace viewer. Use [WithName] and [TaskName] to give
-// stoppers and tasks descriptive names in the trace output.
+// stoppers and tasks descriptive names; otherwise, names are
+// automatically generated from the source location of the call.
+//
+// # Observability
+//
+// Every [Context] is associated with a [TaskGroup], which forms a
+// hierarchy matching the [Context] hierarchy. The [TaskGroup] can be
+// retrieved via [TaskGroupFrom] and provides access to its name, parent
+// group, child groups (via [TaskGroup.Children]), and currently active
+// tasks (via [TaskGroup.Tasks]).
+//
+// For every task execution, a [TaskInfo] is created and can be
+// retrieved via [TaskInfoFrom]. It provides metadata about the task,
+// including its name, start time, and its containing [TaskGroup]. It
+// also includes a [TaskInfo.Done] channel that closes when the task
+// finishes, and a [TaskInfo.Error] field that records the outcome.
+//
+// This behavior can be disabled by using [WithNoTaskInfo].
 //
 // # Concurrent sequence processing
 //

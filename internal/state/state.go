@@ -31,10 +31,9 @@ type State struct {
 		count        int            // Includes nested state counts.
 		deferred     []func() error // Invoked via hardStopLocked.
 		errs         []error
-		graceTimer   *time.Timer // Created in Stop(), cleared in hardStopLocked.
-		stopHooks    map[uint64]func()
-		stopHooksID  uint64
-		stopOnIdle   *time.Duration // The value is a grace period.
+		graceTimer   *time.Timer       // Created in Stop(), cleared in hardStopLocked.
+		stopHooks    map[*State]func() // Keys are immediate children.
+		stopOnIdle   *time.Duration    // The value is a grace period.
 		stopping     bool
 	}
 }
@@ -81,7 +80,11 @@ func (s *State) addDeferred(fn func() error) (deferred bool) {
 // closed. They must therefore not cause any reentrant behavior on the
 // State context to which they're registered. The callback will be
 // executed immediately if the state is already stopping.
-func (s *State) AddStopHook(fn func()) (cancel func()) {
+//
+// Note that while fn does eventually call child.Stop(), there are a
+// number of facade-specific behaviors that need to happen before Stop()
+// is called.
+func (s *State) AddStopHook(child *State, fn func()) (cancel func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.mu.stopping {
@@ -89,11 +92,9 @@ func (s *State) AddStopHook(fn func()) (cancel func()) {
 		return func() {}
 	}
 	if s.mu.stopHooks == nil {
-		s.mu.stopHooks = make(map[uint64]func())
+		s.mu.stopHooks = make(map[*State]func())
 	}
-	id := s.mu.stopHooksID
-	s.mu.stopHooksID++
-	s.mu.stopHooks[id] = fn
+	s.mu.stopHooks[child] = fn
 	return func() {
 		// Disarm the cancel function if the state is already stopping.
 		select {
@@ -105,7 +106,7 @@ func (s *State) AddStopHook(fn func()) (cancel func()) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		if s.mu.stopHooks != nil {
-			delete(s.mu.stopHooks, id)
+			delete(s.mu.stopHooks, child)
 		}
 	}
 }

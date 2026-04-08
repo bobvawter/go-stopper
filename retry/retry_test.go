@@ -150,7 +150,7 @@ func TestStateAccumulates(t *testing.T) {
 
 	err := ctx.Call(func(_ stopper.Context) error {
 		return errors.New("always fail")
-	})
+	}, stopper.TaskName("task"))
 	r.Error(err)
 	r.Equal("task: too many retries", err.Error())
 }

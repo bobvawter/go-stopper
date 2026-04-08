@@ -4,6 +4,8 @@
 package stopper
 
 import (
+	"fmt"
+	"runtime"
 	"slices"
 	"time"
 )
@@ -74,12 +76,14 @@ type config struct {
 	noInherit   bool
 	noTaskInfo  bool
 	gracePeriod *time.Duration
+	group       *TaskGroup
 	taskOpts    *task
 }
 
 // Clone returns a deep copy of the config.
 func (c *config) Clone() *config {
 	return &config{
+		group:       c.group,
 		name:        c.name,
 		noInherit:   c.noInherit,
 		noTaskInfo:  c.noTaskInfo,
@@ -93,6 +97,9 @@ func (c *config) Merge(o *config) {
 	// Reset to a zero value if inheritance has been disabled.
 	if o.noInherit {
 		*c = config{}
+	}
+	if o.group != nil {
+		c.group = o.group
 	}
 	if o.name != "" {
 		if c.name == "" {
@@ -118,9 +125,6 @@ func (c *config) Merge(o *config) {
 
 // Sanitize ensures that reasonable defaults have been set.
 func (c *config) Sanitize() {
-	if c.name == "" {
-		c.name = "stopper"
-	}
 	if c.gracePeriod == nil {
 		g := DefaultGracePeriod
 		c.gracePeriod = &g
@@ -217,23 +221,29 @@ type task struct {
 // Apply the options to the target configuration. If the options modify
 // the base configuration, a new instance will be returned.
 func applyTaskOpts(base *task, opts []TaskOption) *task {
-	// Return unmodified if no additional options.
-	if len(opts) == 0 {
-		return base
-	}
 	// Execute the option functions to produce intermediate config.
-	next := &task{}
+	partial := &task{}
 	for _, opt := range opts {
-		opt(next)
+		opt(partial)
 	}
-	// Return intermediate if no base or if no-inherit flag is set.
-	if base == nil || next.noInherit {
-		next.Sanitize()
-		return next
+	// Return immediately if no base or if no-inherit flag is set.
+	if base == nil || partial.noInherit {
+		if partial.name == "" {
+			if _, file, line, ok := runtime.Caller(3); ok {
+				partial.name = fmt.Sprintf("%s:%d", file, line)
+			}
+		}
+		partial.Sanitize()
+		return partial
 	}
 	// Merge the intermediate into a copy of the base.
 	ret := base.Clone()
-	ret.Merge(next)
+	ret.Merge(partial)
+	if ret.name == "" {
+		if _, file, line, ok := runtime.Caller(3); ok {
+			ret.name = fmt.Sprintf("%s:%d", file, line)
+		}
+	}
 	ret.Sanitize()
 	return ret
 }
@@ -265,9 +275,6 @@ func (t *task) Merge(o *task) {
 func (t *task) Sanitize() {
 	if t.errHandler == nil {
 		t.errHandler = ErrorHandlerStop
-	}
-	if t.name == "" {
-		t.name = "task"
 	}
 }
 

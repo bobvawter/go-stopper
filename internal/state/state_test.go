@@ -246,38 +246,53 @@ func TestErrGracePeriodExpired(t *testing.T) {
 
 func TestAddStopHookCalledOnStop(t *testing.T) {
 	r := require.New(t)
-	s := New(func(error) {}, nil, nil)
+	parent := New(func(error) {}, nil, nil)
+
+	child := New(func(error) {}, nil, parent)
 	called := false
-	s.AddStopHook(func() { called = true })
+	cancel := parent.AddStopHook(child, func() { called = true })
 	r.False(called)
-	s.softStopLocked(time.Duration(0))
+
+	parent.softStopLocked(time.Duration(0))
 	r.True(called)
+	r.NotPanics(cancel)
 }
 
 func TestAddStopHookCalledImmediatelyWhenAlreadyStopping(t *testing.T) {
 	r := require.New(t)
-	s := New(func(error) {}, nil, nil)
-	s.softStopLocked(time.Duration(0))
+	parent := New(func(error) {}, nil, nil)
+	parent.softStopLocked(time.Duration(0))
+
+	child := New(func(error) {}, nil, parent)
 	called := false
-	s.AddStopHook(func() { called = true })() // Also check no-op cancel
+	cancel := parent.AddStopHook(child, func() { called = true })
+
 	r.True(called)
+	r.NotPanics(cancel)
 }
 
 func TestAddStopHookCancelRemovesHook(t *testing.T) {
 	r := require.New(t)
-	s := New(func(error) {}, nil, nil)
+	parent := New(func(error) {}, nil, nil)
+
+	child := New(func(error) {}, nil, parent)
 	called := false
-	cancel := s.AddStopHook(func() { called = true })
+	cancel := parent.AddStopHook(child, func() { called = true })
 	cancel()
-	s.softStopLocked(time.Duration(0))
+
+	parent.softStopLocked(time.Duration(0))
 	r.False(called)
+	r.NotPanics(cancel)
 }
 
 func TestAddStopHookCancelSafeAfterStop(t *testing.T) {
 	r := require.New(t)
-	s := New(func(error) {}, nil, nil)
-	cancel := s.AddStopHook(func() {})
-	s.softStopLocked(time.Duration(0))
+	parent := New(func(error) {}, nil, nil)
+	child := New(func(error) {}, nil, parent)
+	called := false
+	cancel := parent.AddStopHook(child, func() { called = true })
+	parent.softStopLocked(time.Duration(0))
+	r.True(called)
 	// Should not panic or deadlock.
 	r.NotPanics(cancel)
 }

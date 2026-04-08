@@ -37,13 +37,13 @@ A `Middleware` has two phases:
 
 ```go
 type TaskInfo struct {
-    Context     Context
-    ContextName string
-    Done        <-chan struct{}
-    Error       atomic.Pointer[error]
-    Started     time.Time
-    Task        Func
-    TaskName    string
+    Context  Context
+    Done     <-chan struct{}
+    Error    atomic.Pointer[error]
+    Group    *TaskGroup
+    Started  time.Time
+    Task     Func
+    TaskName string
 }
 ```
 
@@ -125,9 +125,9 @@ func WithTracing(tracer trace.Tracer) stopper.Middleware {
             info, _ := stopper.TaskInfoFrom(ctx)
 
             spanCtx, span := tracer.Start(ctx,
-                info.ContextName+"."+info.TaskName,
+                info.Group.Name+"."+info.TaskName,
                 trace.WithAttributes(
-                    attribute.String("stopper.context", info.ContextName),
+                    attribute.String("stopper.context", info.Group.Name),
                     attribute.String("stopper.task", info.TaskName),
                 ),
             )
@@ -177,7 +177,7 @@ func WithMetrics(meter metric.Meter) stopper.Middleware {
         return outer, func(ctx stopper.Context, task stopper.Func) error {
             info, _ := stopper.TaskInfoFrom(ctx)
             attrs := attribute.NewSet(
-                attribute.String("stopper.context", info.ContextName),
+                attribute.String("stopper.context", info.Group.Name),
                 attribute.String("stopper.task", info.TaskName),
             )
 
@@ -254,7 +254,7 @@ func WithMetrics(m *Metrics) stopper.Middleware {
         return outer, func(ctx stopper.Context, task stopper.Func) error {
             info, _ := stopper.TaskInfoFrom(ctx)
             labels := prometheus.Labels{
-                "context": info.ContextName,
+                "context": info.Group.Name,
                 "task":    info.TaskName,
             }
 
@@ -321,8 +321,8 @@ func WithTracing() stopper.Middleware {
 
             span, spanCtx := tracer.StartSpanFromContext(ctx,
                 "stopper.task",
-                tracer.ResourceName(info.ContextName+"."+info.TaskName),
-                tracer.Tag("stopper.context", info.ContextName),
+                tracer.ResourceName(info.Group.Name+"."+info.TaskName),
+                tracer.Tag("stopper.context", info.Group.Name),
                 tracer.Tag("stopper.task", info.TaskName),
             )
             defer span.Finish()
@@ -386,14 +386,14 @@ func WithErrorCapture() stopper.Middleware {
 
         return outer, func(ctx stopper.Context, task stopper.Func) error {
             info, _ := stopper.TaskInfoFrom(ctx)
-            opName := info.ContextName + "." + info.TaskName
+            opName := info.Group.Name + "." + info.TaskName
 
             // Attach the cloned hub to the task context.
             sentryCtx := sentry.SetHubOnContext(ctx, hub)
             ctx = ctx.WithDelegate(sentryCtx)
 
             hub.ConfigureScope(func(scope *sentry.Scope) {
-                scope.SetTag("stopper.context", info.ContextName)
+                scope.SetTag("stopper.context", info.Group.Name)
                 scope.SetTag("stopper.task", info.TaskName)
             })
 
@@ -460,7 +460,7 @@ wrapper.
 ### Naming Convention
 
 All integrations derive operation/span/metric names from
-`TaskInfo.ContextName` and `TaskInfo.TaskName`. Users control these via
+`TaskInfo.Group.Name` and `TaskInfo.TaskName`. Users control these via
 `WithName` and `TaskName`:
 
 ```go
