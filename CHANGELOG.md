@@ -6,6 +6,7 @@
   * `TaskGroup` allows the stopper hierarchy to be inspected.
   * Support `go1.21.0` minimum version.
   * Ensure the error returned by `Context.Wait` is `ErrGracePeriodExpired` if hard-stop was hit.
+  * Multiple calls to `Context.Stop()` allow the grace period to be shortened.
 
 ## v2.0.0-alpha.2
   * Update `seq` package iterators to only cancel on hard-stop.

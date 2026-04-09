@@ -31,7 +31,8 @@ type State struct {
 		count        int            // Includes nested state counts.
 		deferred     []func() error // Invoked via hardStopLocked.
 		errs         []error
-		graceTimer   *time.Timer       // Created in Stop(), cleared in hardStopLocked.
+		graceTimer   *time.Timer       // Created by softStopLocked, cleared in hardStopLocked.
+		stopAt       *time.Time        // The time at which the state will hard-stop.
 		stopHooks    map[*State]func() // Keys are immediate children.
 		stopOnIdle   *time.Duration    // The value is a grace period.
 		stopping     bool
@@ -273,6 +274,7 @@ func (s *State) hardStopLocked(err error) (deferred []func() error) {
 	if timer := s.mu.graceTimer; timer != nil {
 		timer.Stop()
 		s.mu.graceTimer = nil
+		s.mu.stopAt = nil
 	}
 
 	// Capture deferred callbacks to execute. We treat the final
@@ -291,23 +293,15 @@ func (s *State) hardStopLocked(err error) (deferred []func() error) {
 	return
 }
 
-// softStopLocked is a one-shot method to place the context into the
-// stopping state. It will hard-stop the State if no tasks remain or
-// when the grace period has expired. This method returns deferred
-// callbacks to execute outside the mutex.
+// softStopLocked places the State into the stopping state. It will
+// hard-stop the State if no tasks remain or when the grace period has
+// expired. This method returns deferred callbacks to execute outside
+// the mutex.
 func (s *State) softStopLocked(gracePeriod time.Duration) (deferred []func() error) {
-	if s.mu.stopping {
-		// We want to re-check the number of tasks here if Stop() were
-		// called with a grace period while tasks are pending. Once the
-		// number of active tasks reaches zero, this method will be
-		// called again.
-		if s.mu.count == 0 {
-			deferred = s.hardStopLocked(ErrStopped)
-		}
-		return
+	if !s.mu.stopping {
+		s.mu.stopping = true
+		close(s.stopping)
 	}
-	s.mu.stopping = true
-	close(s.stopping)
 
 	// These hooks do not call user-provided code.
 	if hooks := s.mu.stopHooks; len(hooks) > 0 {
@@ -320,7 +314,7 @@ func (s *State) softStopLocked(gracePeriod time.Duration) (deferred []func() err
 		s.mu.stopHooks = nil
 	}
 
-	// We may still want to call into hardStopLocked(), which is a one-shot,
+	// We may still want to call into hardStopLocked(), which is a one-shot.
 	if s.mu.count == 0 {
 		// Cancel the context if nothing's currently running.
 		deferred = append(deferred, s.hardStopLocked(ErrStopped)...)
@@ -328,19 +322,28 @@ func (s *State) softStopLocked(gracePeriod time.Duration) (deferred []func() err
 		// A non-positive grace period is effectively a hard-stop.
 		deferred = append(deferred, s.hardStopLocked(ErrGracePeriodExpired)...)
 	} else {
-		// Cancel after the grace period has expired. This is built
-		// using a timer so that hardStopLocked can stop the timer early
-		// on a clean exit. A race between the timer callback and a
-		// clean exit is safe since the timer callback reacquires the
-		// mutex and hardStopLocked() is a one-shot.
-		s.mu.graceTimer = time.AfterFunc(gracePeriod, func() {
-			var toCall []func() error
-			defer func() { s.callDeferred(toCall) }()
-
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			toCall = s.hardStopLocked(ErrGracePeriodExpired)
-		})
+		s.updateGraceTimerLocked(gracePeriod)
 	}
 	return
+}
+
+// updateGraceTimerLocked creates the grace period timer or shortens it
+// in the case of repeated calls.
+func (s *State) updateGraceTimerLocked(gracePeriod time.Duration) {
+	newStopAt := time.Now().Add(gracePeriod)
+	if s.mu.stopAt != nil && newStopAt.Compare(*s.mu.stopAt) >= 0 {
+		return
+	}
+	if s.mu.graceTimer != nil {
+		s.mu.graceTimer.Stop()
+	}
+	s.mu.stopAt = &newStopAt
+	s.mu.graceTimer = time.AfterFunc(gracePeriod, func() {
+		var toCall []func() error
+		defer func() { s.callDeferred(toCall) }()
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		toCall = s.hardStopLocked(ErrGracePeriodExpired)
+	})
 }

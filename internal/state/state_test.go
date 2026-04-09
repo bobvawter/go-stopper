@@ -368,3 +368,53 @@ func TestAddDeferredWhileStoppingWithActiveCount(t *testing.T) {
 	a.True(s.Apply(-1))
 	a.True(executed, "deferred should have been executed after count reaches zero")
 }
+
+func TestStopGracePeriodEscalation(t *testing.T) {
+	r := require.New(t)
+	cancelErr := make(chan error, 1)
+	s := New(func(err error) { cancelErr <- err }, nil, nil)
+
+	// Start a task so it doesn't stop immediately.
+	r.True(s.Apply(1))
+
+	// Stop with a long grace period.
+	s.Stop(time.Hour)
+	r.True(s.IsStopping())
+
+	// Stop again with no grace period.
+	s.Stop(0)
+
+	// It should stop immediately with ErrGracePeriodExpired.
+	select {
+	case err := <-cancelErr:
+		r.ErrorIs(err, ErrGracePeriodExpired)
+	case <-time.After(100 * time.Millisecond):
+		r.Fail("Should have stopped immediately after Stop(0)")
+	}
+}
+
+func TestStopGracePeriodShortening(t *testing.T) {
+	r := require.New(t)
+	cancelErr := make(chan error, 1)
+	s := New(func(err error) { cancelErr <- err }, nil, nil)
+
+	// Start a task so it doesn't stop immediately.
+	r.True(s.Apply(1))
+
+	// Stop with a long grace period.
+	s.Stop(time.Hour)
+	r.True(s.IsStopping())
+
+	// Stop again with a very short grace period.
+	start := time.Now()
+	s.Stop(50 * time.Millisecond)
+
+	// It should stop after about 50ms.
+	select {
+	case err := <-cancelErr:
+		r.ErrorIs(err, ErrGracePeriodExpired)
+		r.GreaterOrEqual(time.Since(start), 50*time.Millisecond)
+	case <-time.After(500 * time.Millisecond):
+		r.Fail("Should have stopped after 50ms")
+	}
+}
