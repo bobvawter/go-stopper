@@ -212,10 +212,11 @@ func StopOnIdle() StopOption {
 }
 
 type task struct {
-	errHandler ErrorHandler
-	name       string
-	noInherit  bool
-	mw         []Middleware
+	callerOffset int
+	errHandler   ErrorHandler
+	name         string
+	noInherit    bool
+	mw           []Middleware
 }
 
 // Apply the options to the target configuration. If the options modify
@@ -226,10 +227,15 @@ func applyTaskOpts(base *task, opts []TaskOption) *task {
 	for _, opt := range opts {
 		opt(partial)
 	}
+
+	// This fixes the package-level helper versus the methods on
+	// Context.
+	offset := 3 + partial.callerOffset
+
 	// Return immediately if no base or if no-inherit flag is set.
 	if base == nil || partial.noInherit {
 		if partial.name == "" {
-			if _, file, line, ok := runtime.Caller(3); ok {
+			if _, file, line, ok := runtime.Caller(offset); ok {
 				partial.name = fmt.Sprintf("%s:%d", file, line)
 			}
 		}
@@ -240,7 +246,7 @@ func applyTaskOpts(base *task, opts []TaskOption) *task {
 	ret := base.Clone()
 	ret.Merge(partial)
 	if ret.name == "" {
-		if _, file, line, ok := runtime.Caller(3); ok {
+		if _, file, line, ok := runtime.Caller(offset); ok {
 			ret.name = fmt.Sprintf("%s:%d", file, line)
 		}
 	}
@@ -251,15 +257,19 @@ func applyTaskOpts(base *task, opts []TaskOption) *task {
 // Clone returns a deep copy of the task.
 func (t *task) Clone() *task {
 	return &task{
-		errHandler: t.errHandler,
-		name:       t.name,
-		noInherit:  t.noInherit,
-		mw:         slices.Clone(t.mw),
+		callerOffset: t.callerOffset,
+		errHandler:   t.errHandler,
+		name:         t.name,
+		noInherit:    t.noInherit,
+		mw:           slices.Clone(t.mw),
 	}
 }
 
 // Merge updates the receiver with additional configuration.
 func (t *task) Merge(o *task) {
+	if o.callerOffset != 0 {
+		t.callerOffset = o.callerOffset
+	}
 	if o.errHandler != nil {
 		t.errHandler = o.errHandler
 	}
@@ -281,14 +291,6 @@ func (t *task) Sanitize() {
 // A TaskOption may be passed to [Context.Call] or [Context.Go].
 type TaskOption func(*task)
 
-// TaskName provides a display string to associate with any error
-// messages associated with the task.
-func TaskName(name string) TaskOption {
-	return func(t *task) {
-		t.name = name
-	}
-}
-
 // TaskErrHandler provides a means of handling errors from asynchronous
 // tasks.
 func TaskErrHandler(h ErrorHandler) TaskOption {
@@ -305,10 +307,26 @@ func TaskMiddleware(mw ...Middleware) TaskOption {
 	}
 }
 
+// TaskName provides a display string to associate with any error
+// messages associated with the task.
+func TaskName(name string) TaskOption {
+	return func(t *task) {
+		t.name = name
+	}
+}
+
 // TaskNoInherit disables any inherited TaskOptions that were provided
 // to the stopper constructor via [WithTaskOptions].
 func TaskNoInherit() TaskOption {
 	return func(t *task) {
 		t.noInherit = true
+	}
+}
+
+// withCallerOffset is an internal option used by the package-level
+// helpers to adjust the automatically-detected task names.
+func withCallerOffset(offset int) TaskOption {
+	return func(t *task) {
+		t.callerOffset = offset
 	}
 }

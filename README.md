@@ -1,4 +1,4 @@
-# Graceful Task Lifecycle Management for Go
+# Structured, Observable Concurrency for Go
 
 [![Go Reference](https://pkg.go.dev/badge/vawter.tech/stopper/v2.svg)](https://pkg.go.dev/vawter.tech/stopper/v2)
 [![codecov](https://codecov.io/gh/bobvawter/go-stopper/graph/badge.svg?token=7XT22QWN4R)](https://codecov.io/gh/bobvawter/go-stopper)
@@ -7,16 +7,23 @@
 go get vawter.tech/stopper/v2
 ```
 
-Package `stopper` brings structured concurrency and graceful lifecycle
-management to long-running tasks in a Go program. A stopper `Context`
-extends the standard library `context.Context` with a two-phase shutdown
-model — a soft-stop signal for graceful draining followed by a hard
-cancel after a configurable grace period — and includes task-launching
-APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
-[`ErrGroup`](https://pkg.go.dev/golang.org/x/sync/errgroup). This package supports `go1.21.0` and onwards.
+Package `stopper` brings **structured, observable concurrency** to Go programs. It extends the standard library `context.Context` with a hierarchical task model and two-phase graceful shutdown, providing deep runtime visibility into your application's task tree.
 
 ## Features
 
+* **Structured concurrency** – Tasks created with `WithContext` form a
+  hierarchy: stopping a parent automatically stops its children, while
+  `Len()` and `Wait()` account for tasks across the entire tree.
+* **Observability** – every `Context` is associated with a `TaskGroup`
+  providing real-time visibility into the task hierarchy. Use
+  `TaskGroupFrom(ctx)`, `TaskInfoFrom(ctx)`, and `TaskTree(group, out)`
+  to inspect active tasks and their states.
+* **Always-on `runtime/trace`** – every stopper `Context` and every
+  task automatically creates a `runtime/trace.Task`, so the full
+  hierarchy appears in Go execution traces with zero extra code.
+  Built-in middleware in `limit` and `retry` annotate blocking waits
+  with `trace.StartRegion` for concurrency, rate-limit, and retry
+  visibility.
 * **Two-phase shutdown** – calling `Stop()` closes the `Stopping()`
   channel, giving tasks a window to drain gracefully before the context
   is canceled (`Done()`). Use `Stopping()` in a `select` or call
@@ -24,8 +31,6 @@ APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
 * **Generic task adaptors** – the package-level `Go`, `GoN`, `Call`, and
   `Defer` functions accept any signature from `func()` to
   `func(stopper.Context) error`.
-* **Nested contexts** – stop signals propagate from parent to child;
-  `Len()` and `Wait()` account for the entire tree.
 * **Middleware** – composable `Middleware` functions wrap task execution
   for cross-cutting concerns such as concurrency or rate limiting (see
   the [`limit`](https://pkg.go.dev/vawter.tech/stopper/v2/limit)
@@ -39,16 +44,6 @@ APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
   `errors.As(err, &re)` to extract the `RecoveredError` and inspect
   its `Stack` field or call its `String()` method for a human-readable
   trace.
-* **Observability** – every `Context` is associated with a `TaskGroup`
-  providing real-time visibility into the task hierarchy. Use
-  `TaskGroupFrom(ctx)` and `TaskInfoFrom(ctx)` to inspect active tasks
-  and their states.
-* **Always-on `runtime/trace`** – every stopper `Context` and every
-  task automatically creates a `runtime/trace.Task`, so the full
-  hierarchy appears in Go execution traces with zero extra code.
-  Built-in middleware in `limit` and `retry` annotate blocking waits
-  with `trace.StartRegion` for concurrency, rate-limit, and retry
-  visibility.
 * **Context interop** – works with any library that produces custom
   `context.Context` values via `WithDelegate()` and
   `StoppingContext()`.
@@ -70,6 +65,10 @@ APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
 * **Test helpers** – the
   [`linger`](https://pkg.go.dev/vawter.tech/stopper/v2/linger)
   sub-package detects tasks that fail to exit promptly.
+
+## Competitive Analysis
+
+For a detailed comparison of `stopper` against other Go concurrency libraries (such as `errgroup`, `conc`, and `oklog/run`), see the [Competitive Market Analysis](doc/analysis.md).
 
 ## Quick Start
 
@@ -93,6 +92,28 @@ ctx.Stop(stopper.StopGracePeriod(time.Second))
 if err := ctx.Wait(); err != nil {
     log.Fatal(err)
 }
+```
+
+## Deep Observability
+
+The `stopper` package provides real-time visibility into your goroutine hierarchy:
+
+```go
+ctx := stopper.New(stopper.WithName("api-server"))
+_ = stopper.Go(ctx, task1, stopper.TaskName("request-handler"))
+_ = stopper.Go(ctx, task2, stopper.TaskName("background-sync"))
+
+// Write a stable, human-readable representation of the task tree to stdout.
+if g, ok := stopper.TaskGroupFrom(ctx); ok {
+    stopper.TaskTree(g, os.Stdout)
+}
+```
+
+Example output:
+```text
+api-server
+├── api-server.request-handler (started 2026-04-08T21:53:00Z) (running)
+└── api-server.background-sync (started 2026-04-08T21:53:00Z) (running)
 ```
 
 For simple loops that don't need a `select`, use the boolean shorthand:
@@ -125,6 +146,7 @@ demonstrate a variety of patterns:
 | Middleware | [`ExampleMiddleware`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Middleware) |
 | `runtime/trace` integration | [`ExampleContext_tracing`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Context-Tracing) |
 | Task observability metadata | [`ExampleTaskInfo`](https://pkg.go.dev/vawter.tech/stopper/v2#example-TaskInfo) |
+| Task hierarchy tree | [`ExampleTaskTree`](https://pkg.go.dev/vawter.tech/stopper/v2#example-TaskTree) |
 | Retry with exponential backoff | [`ExampleBackoff`](https://pkg.go.dev/vawter.tech/stopper/v2/retry#example-Backoff) |
 | Concurrency / rate limiting | [`Example`](https://pkg.go.dev/vawter.tech/stopper/v2/limit#example-package) |
 | Detecting lingering tasks | [`ExampleRecorder`](https://pkg.go.dev/vawter.tech/stopper/v2/linger#example-Recorder) |
@@ -145,4 +167,4 @@ Version 1 of this repository was extracted from
 by the code's original author.
 
 Version 2 is a complete overhaul of the library's API with a focus on
-better composition and separation of concerns within the implementation.
+structured, observable concurrency and better composition.

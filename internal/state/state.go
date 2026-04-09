@@ -26,12 +26,13 @@ type State struct {
 	stopping chan struct{}
 
 	mu struct {
-		sync.RWMutex                // Invariant: parents never lock children.
+		sync.RWMutex                // Invariant: locked children never lock parents.
 		cancel       func(error)    // Invoked via hardStopLocked.
 		count        int            // Includes nested state counts.
 		deferred     []func() error // Invoked via hardStopLocked.
 		errs         []error
-		graceTimer   *time.Timer       // Created in Stop(), cleared in hardStopLocked.
+		graceTimer   *time.Timer       // Created by softStopLocked, cleared in hardStopLocked.
+		stopAt       *time.Time        // The time at which the state will hard-stop.
 		stopHooks    map[*State]func() // Keys are immediate children.
 		stopOnIdle   *time.Duration    // The value is a grace period.
 		stopping     bool
@@ -86,11 +87,13 @@ func (s *State) addDeferred(fn func() error) (deferred bool) {
 // is called.
 func (s *State) AddStopHook(child *State, fn func()) (cancel func()) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.mu.stopping {
+		// Don't run callbacks within critical sections.
+		s.mu.Unlock()
 		fn()
 		return func() {}
 	}
+	defer s.mu.Unlock()
 	if s.mu.stopHooks == nil {
 		s.mu.stopHooks = make(map[*State]func())
 	}
@@ -114,15 +117,16 @@ func (s *State) AddStopHook(child *State, fn func()) (cancel func()) {
 // Apply is used to maintain the count of started goroutines. It returns
 // true if the delta was applied.
 func (s *State) Apply(delta int) bool {
-	// Execute any deferred callbacks outside the mutex.
-	var deferred []func() error
-	defer func() { s.callDeferred(deferred) }()
+	// Included for completeness, passing a zero value is meaningless.
+	if delta == 0 {
+		return false
+	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	// Don't allow new goroutines to be added when stopping.
-	if s.mu.stopping && delta >= 0 {
+	// Fast check to disallow new tasks if already stopping.
+	s.mu.RLock()
+	isStopping := s.mu.stopping
+	s.mu.RUnlock()
+	if isStopping && delta > 0 {
 		return false
 	}
 
@@ -130,10 +134,27 @@ func (s *State) Apply(delta int) bool {
 	// context to prevent premature cancellation. Verify that the parent
 	// accepted the delta in case it was just stopped, but our
 	// stop-propagation callback hasn't fired yet.
-	//
-	// Note that the call to parent.Apply() is safe only because there
-	// are currently no cases where a parent locks a child.
 	if s.parent != nil && !s.parent.Apply(delta) {
+		return false
+	}
+
+	// Execute any deferred callbacks outside the mutex.
+	var deferred []func() error
+	defer func() { s.callDeferred(deferred) }()
+
+	// Critical section begins.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Unwind the previous call to Apply() if another thread called
+	// Stop() while we were making the unlocked call to the parent.
+	if s.mu.stopping && delta > 0 {
+		if s.parent != nil {
+			deferred = append(deferred, func() error {
+				s.parent.Apply(-delta)
+				return nil
+			})
+		}
 		return false
 	}
 
@@ -253,6 +274,7 @@ func (s *State) hardStopLocked(err error) (deferred []func() error) {
 	if timer := s.mu.graceTimer; timer != nil {
 		timer.Stop()
 		s.mu.graceTimer = nil
+		s.mu.stopAt = nil
 	}
 
 	// Capture deferred callbacks to execute. We treat the final
@@ -271,53 +293,57 @@ func (s *State) hardStopLocked(err error) (deferred []func() error) {
 	return
 }
 
-// softStopLocked is a one-shot method to place the context into the
-// stopping state. It will hard-stop the State if no tasks remain or
-// when the grace period has expired. This method returns deferred
-// callbacks to execute outside the mutex.
+// softStopLocked places the State into the stopping state. It will
+// hard-stop the State if no tasks remain or when the grace period has
+// expired. This method returns deferred callbacks to execute outside
+// the mutex.
 func (s *State) softStopLocked(gracePeriod time.Duration) (deferred []func() error) {
-	if s.mu.stopping {
-		// We want to re-check the number of tasks here if Stop() were
-		// called with a grace period while tasks are pending. Once the
-		// number of active tasks reaches zero, this method will be
-		// called again.
-		if s.mu.count == 0 {
-			deferred = s.hardStopLocked(ErrStopped)
-		}
-		return
+	if !s.mu.stopping {
+		s.mu.stopping = true
+		close(s.stopping)
 	}
-	s.mu.stopping = true
-	close(s.stopping)
 
 	// These hooks do not call user-provided code.
-	if hooks := s.mu.stopHooks; hooks != nil {
-		for _, fn := range hooks {
-			fn()
-		}
+	if hooks := s.mu.stopHooks; len(hooks) > 0 {
+		deferred = append(deferred, func() error {
+			for _, hook := range hooks {
+				hook()
+			}
+			return nil
+		})
 		s.mu.stopHooks = nil
 	}
 
-	// We may still want to call into hardStopLocked(), which is a one-shot,
+	// We may still want to call into hardStopLocked(), which is a one-shot.
 	if s.mu.count == 0 {
 		// Cancel the context if nothing's currently running.
-		deferred = s.hardStopLocked(ErrStopped)
+		deferred = append(deferred, s.hardStopLocked(ErrStopped)...)
 	} else if gracePeriod <= 0 {
 		// A non-positive grace period is effectively a hard-stop.
-		deferred = s.hardStopLocked(ErrGracePeriodExpired)
+		deferred = append(deferred, s.hardStopLocked(ErrGracePeriodExpired)...)
 	} else {
-		// Cancel after the grace period has expired. This is built
-		// using a timer so that hardStopLocked can stop the timer early
-		// on a clean exit. A race between the timer callback and a
-		// clean exit is safe since the timer callback reacquires the
-		// mutex and hardStopLocked() is a one-shot.
-		s.mu.graceTimer = time.AfterFunc(gracePeriod, func() {
-			var toCall []func() error
-			defer func() { s.callDeferred(toCall) }()
-
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			toCall = s.hardStopLocked(ErrGracePeriodExpired)
-		})
+		s.updateGraceTimerLocked(gracePeriod)
 	}
 	return
+}
+
+// updateGraceTimerLocked creates the grace period timer or shortens it
+// in the case of repeated calls.
+func (s *State) updateGraceTimerLocked(gracePeriod time.Duration) {
+	newStopAt := time.Now().Add(gracePeriod)
+	if s.mu.stopAt != nil && newStopAt.Compare(*s.mu.stopAt) >= 0 {
+		return
+	}
+	if s.mu.graceTimer != nil {
+		s.mu.graceTimer.Stop()
+	}
+	s.mu.stopAt = &newStopAt
+	s.mu.graceTimer = time.AfterFunc(gracePeriod, func() {
+		var toCall []func() error
+		defer func() { s.callDeferred(toCall) }()
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		toCall = s.hardStopLocked(ErrGracePeriodExpired)
+	})
 }

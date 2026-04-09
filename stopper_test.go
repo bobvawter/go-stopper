@@ -38,7 +38,7 @@ func TestCancelOuter(t *testing.T) {
 	a.True(IsStopping(s))
 	a.ErrorIs(s.Err(), context.Canceled)
 	a.ErrorIs(context.Cause(s), context.Canceled)
-	a.Nil(s.Wait())
+	a.NoError(s.Wait())
 }
 
 func TestCall(t *testing.T) {
@@ -354,7 +354,7 @@ func TestStopper(t *testing.T) {
 
 	// Verify that the context is stopping but not canceled.
 	a.True(IsStopping(s))
-	a.Nil(s.Err())
+	a.NoError(s.Err())
 
 	// It's a no-op to run new routines after stopping.
 	a.ErrorIs(s.Go(func(Context) error { return nil }), ErrStopped)
@@ -370,7 +370,7 @@ func TestStopper(t *testing.T) {
 		a.Fail("timeout waiting for Context.Done()")
 	}
 	a.True(IsStopping(s))
-	a.NotNil(s.Err())
+	a.ErrorIs(s.Err(), context.Canceled)
 	a.ErrorIs(context.Cause(s), ErrStopped)
 	a.Nil(s.Wait())
 	a.Equal("tester: (0 tasks) (0 errors) (stopping=true)", fmt.Sprintf("%s", s))
@@ -477,6 +477,24 @@ func TestWaitInterrupt(t *testing.T) {
 	// to WaitCtx().
 	r.False(ctx.IsStopping())
 	r.Nil(ctx.Err())
+}
+
+func TestWaitGracePeriodExpired(t *testing.T) {
+	r := require.New(t)
+	s := New()
+
+	// Start a blocking task.
+	block := make(chan struct{})
+	defer close(block)
+	r.NoError(Go(s, func() { <-block }))
+
+	// Stop with a short grace period.
+	s.Stop(StopGracePeriod(time.Millisecond))
+
+	// Wait should return ErrGracePeriodExpired.
+	err := s.Wait()
+	r.ErrorIs(err, ErrGracePeriodExpired)
+	r.ErrorIs(context.Cause(s), ErrGracePeriodExpired)
 }
 
 func TestWithMiddleware(t *testing.T) {

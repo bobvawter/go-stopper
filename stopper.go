@@ -22,7 +22,7 @@ import (
 var ErrStopped = state.ErrStopped
 
 // ErrGracePeriodExpired will be returned from [context.Cause] when the
-// Context has been stopped, but the goroutines have not exited.
+// Context has been stopped, but one or more goroutines have not exited.
 var ErrGracePeriodExpired = state.ErrGracePeriodExpired
 
 // Key is a [context.Context.Value] key for a [Context] used by [From].
@@ -403,12 +403,15 @@ func (c *impl) Wait() error {
 func (c *impl) WaitCtx(ctx context.Context) error {
 	select {
 	case <-c.Done():
+		err := errors.Join(c.st.Errors()...)
+		// Make sure hard-stop condition is visible.
+		if errors.Is(context.Cause(c), ErrGracePeriodExpired) {
+			err = errors.Join(err, ErrGracePeriodExpired)
+		}
+		return err
 	case <-ctx.Done():
-		// Errors() returns a cloned slice.
 		return errors.Join(append(c.st.Errors(), ctx.Err())...)
 	}
-
-	return errors.Join(c.st.Errors()...)
 }
 
 func (c *impl) WithDelegate(ctx context.Context) Context {
