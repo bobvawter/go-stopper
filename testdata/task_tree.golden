@@ -1,0 +1,5 @@
+root
+├── root.task1 (started 2026-02-23T12:00:00Z) (running)
+├── child1
+│   └── child1.task2 (started 2026-02-23T12:00:00Z) (running)
+└── child2

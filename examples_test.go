@@ -521,3 +521,41 @@ func ExampleTaskInfo() {
 	// Group Name: outer.inner
 	// Parent Group: outer
 }
+
+func ExampleTaskTree() {
+	ctx := stopper.New(stopper.WithName("root"))
+	_ = stopper.Go(ctx, func(ctx stopper.Context) {
+		<-ctx.Stopping()
+	}, stopper.TaskName("task1"))
+
+	child := stopper.WithContext(ctx, stopper.WithName("child"))
+	_ = stopper.Go(child, func(ctx stopper.Context) {
+		<-ctx.Stopping()
+	}, stopper.TaskName("task2"))
+
+	if group, ok := stopper.TaskGroupFrom(ctx); ok {
+		var sb strings.Builder
+		stopper.TaskTree(group, &sb)
+
+		// Mask dynamic parts like start times and state for stable output.
+		lines := strings.Split(sb.String(), "\n")
+		for _, line := range lines {
+			if line == "" {
+				continue
+			}
+			if idx := strings.Index(line, " (started "); idx != -1 {
+				line = line[:idx]
+			}
+			fmt.Println(line)
+		}
+	}
+
+	ctx.Stop()
+	_ = ctx.Wait()
+
+	// Output:
+	// root
+	// ├── root.task1
+	// └── root.child
+	//     └── root.child.task2
+}

@@ -4,9 +4,12 @@
 package stopper
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,10 +39,64 @@ func TaskGroupFrom(ctx context.Context) (*TaskGroup, bool) {
 	return found, ok
 }
 
+// TaskTree writes output similar to pstree that shows the task group
+// hierarchy and tasks contained within each node. The specific format
+// written by TaskTree is subject to further change.
+func TaskTree(group *TaskGroup, out io.Writer) {
+	if group == nil {
+		return
+	}
+	renderTaskTree(out, group, "", true, true)
+}
+
+func renderTaskTree(out io.Writer, g *TaskGroup, prefix string, isLast bool, isRoot bool) {
+	if isRoot {
+		_, _ = fmt.Fprintln(out, g.Name)
+	} else {
+		marker := "├── "
+		if isLast {
+			marker = "└── "
+		}
+		_, _ = fmt.Fprintf(out, "%s%s%s\n", prefix, marker, g.Name)
+	}
+
+	var next string
+	if isRoot {
+		next = ""
+	} else if isLast {
+		next = prefix + "    "
+	} else {
+		next = prefix + "│   "
+	}
+
+	tasks := g.Tasks(make([]*TaskInfo, 0, 8))
+	slices.SortFunc(tasks, sortTasks)
+
+	children := g.Children(make([]*TaskGroup, 0, 8))
+	slices.SortFunc(children, func(a, b *TaskGroup) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	total := len(tasks) + len(children)
+	for i, t := range tasks {
+		isLastElem := i == total-1
+		marker := "├── "
+		if isLastElem {
+			marker = "└── "
+		}
+		_, _ = fmt.Fprintf(out, "%s%s%s\n", next, marker, t.String())
+	}
+
+	for i, child := range children {
+		isLastElem := len(tasks)+i == total-1
+		renderTaskTree(out, child, next, isLastElem, false)
+	}
+}
+
 // Children appends the child groups of the receiver to buf and returns
 // it.
 func (g *TaskGroup) Children(buf []*TaskGroup) []*TaskGroup {
-	g.children.Range(func(k, v interface{}) bool {
+	g.children.Range(func(k, v any) bool {
 		buf = append(buf, k.(*TaskGroup))
 		return true
 	})
@@ -48,14 +105,22 @@ func (g *TaskGroup) Children(buf []*TaskGroup) []*TaskGroup {
 
 // MarshalJSON summarizes the TaskGroup.
 func (g *TaskGroup) MarshalJSON() ([]byte, error) {
+	children := g.Children(make([]*TaskGroup, 0, 8))
+	slices.SortFunc(children, func(a, b *TaskGroup) int {
+		return cmp.Compare(a.Name, b.Name)
+	})
+
+	tasks := g.Tasks(make([]*TaskInfo, 0, 8))
+	slices.SortFunc(tasks, sortTasks)
+
 	p := struct {
 		Children []*TaskGroup `json:"children,omitempty"`
 		Name     string       `json:"name,omitempty"`
 		Tasks    []*TaskInfo  `json:"tasks,omitempty"`
 	}{
-		Children: g.Children(make([]*TaskGroup, 0, 8)),
+		Children: children,
 		Name:     g.Name,
-		Tasks:    g.Tasks(make([]*TaskInfo, 0, 8)),
+		Tasks:    tasks,
 	}
 	return json.Marshal(p)
 }
@@ -135,5 +200,38 @@ func (i *TaskInfo) String() string {
 	}
 
 	return fmt.Sprintf("%s.%s (started %s) %s",
-		i.Group.Name, i.TaskName, i.Started, state)
+		i.Group.Name, i.TaskName, i.Started.Format(time.RFC3339), state)
+}
+
+func sortTasks(a, b *TaskInfo) int {
+	if c := cmp.Compare(a.Group.Name, b.Group.Name); c != 0 {
+		return c
+	}
+	if c := cmp.Compare(a.TaskName, b.TaskName); c != 0 {
+		return c
+	}
+	if c := a.Started.Compare(b.Started); c != 0 {
+		return c
+	}
+
+	sa := taskState(a)
+	sb := taskState(b)
+	if c := cmp.Compare(sa, sb); c != 0 {
+		return c
+	}
+	if sa == 2 { // failed
+		ea := (*a.Error.Load()).Error()
+		eb := (*b.Error.Load()).Error()
+		return cmp.Compare(ea, eb)
+	}
+	return 0
+}
+
+func taskState(i *TaskInfo) int {
+	if ptr := i.Error.Load(); ptr == nil {
+		return 0 // running
+	} else if err := *ptr; err == nil {
+		return 1 // success
+	}
+	return 2 // failed
 }

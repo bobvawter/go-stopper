@@ -41,8 +41,8 @@ APIs similar to [`WaitGroup`](https://pkg.go.dev/sync#WaitGroup) or
   trace.
 * **Observability** – every `Context` is associated with a `TaskGroup`
   providing real-time visibility into the task hierarchy. Use
-  `TaskGroupFrom(ctx)` and `TaskInfoFrom(ctx)` to inspect active tasks
-  and their states.
+  `TaskGroupFrom(ctx)`, `TaskInfoFrom(ctx)`, and `TaskTree(group, out)`
+  to inspect active tasks and their states.
 * **Always-on `runtime/trace`** – every stopper `Context` and every
   task automatically creates a `runtime/trace.Task`, so the full
   hierarchy appears in Go execution traces with zero extra code.
@@ -125,6 +125,7 @@ demonstrate a variety of patterns:
 | Middleware | [`ExampleMiddleware`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Middleware) |
 | `runtime/trace` integration | [`ExampleContext_tracing`](https://pkg.go.dev/vawter.tech/stopper/v2#example-Context-Tracing) |
 | Task observability metadata | [`ExampleTaskInfo`](https://pkg.go.dev/vawter.tech/stopper/v2#example-TaskInfo) |
+| Task hierarchy tree | [`ExampleTaskTree`](https://pkg.go.dev/vawter.tech/stopper/v2#example-TaskTree) |
 | Retry with exponential backoff | [`ExampleBackoff`](https://pkg.go.dev/vawter.tech/stopper/v2/retry#example-Backoff) |
 | Concurrency / rate limiting | [`Example`](https://pkg.go.dev/vawter.tech/stopper/v2/limit#example-package) |
 | Detecting lingering tasks | [`ExampleRecorder`](https://pkg.go.dev/vawter.tech/stopper/v2/linger#example-Recorder) |

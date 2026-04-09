@@ -4,10 +4,12 @@
 package stopper
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,32 +18,90 @@ import (
 	"vawter.tech/stopper/v2/internal/tctx"
 )
 
-func TestTaskGroupMarshalJSON(t *testing.T) {
+//go:embed testdata/task_tree.golden
+var taskTreeGolden string
+
+func TestSortTasks(t *testing.T) {
 	r := require.New(t)
-	parent := &TaskGroup{Name: "parent"}
-	child := &TaskGroup{Name: "child", Parent: parent}
-	parent.children.Store(child, struct{}{})
+	g1 := &TaskGroup{Name: "group1"}
+	g2 := &TaskGroup{Name: "group2"}
+	t1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	t2 := time.Date(2026, 1, 1, 0, 0, 1, 0, time.UTC)
 
-	info := &TaskInfo{
-		Group:    parent,
-		TaskName: "task",
+	running := func(g *TaskGroup, name string, started time.Time) *TaskInfo {
+		return &TaskInfo{Group: g, TaskName: name, Started: started}
 	}
-	parent.tasks.Store(info, struct{}{})
+	success := func(g *TaskGroup, name string, started time.Time) *TaskInfo {
+		info := &TaskInfo{Group: g, TaskName: name, Started: started}
+		var err error
+		info.Error.Store(&err)
+		return info
+	}
+	failed := func(g *TaskGroup, name string, started time.Time, msg string) *TaskInfo {
+		info := &TaskInfo{Group: g, TaskName: name, Started: started}
+		err := errors.New(msg)
+		info.Error.Store(&err)
+		return info
+	}
 
-	data, err := json.Marshal(parent)
+	tasks := []*TaskInfo{
+		failed(g1, "task1", t1, "err2"),
+		failed(g1, "task1", t1, "err1"),
+		failed(g1, "task1", t1, "err1"), // Same error message
+		success(g1, "task1", t1),
+		success(g1, "task1", t1), // Same success
+		running(g1, "task1", t1),
+		running(g1, "task1", t2),
+		running(g1, "task2", t1),
+		running(g2, "task1", t1),
+		running(g2, "task1", t1), // Duplicate for equality check
+	}
+
+	slices.SortFunc(tasks, sortTasks)
+
+	expected := []string{
+		"group1.task1 (started 2026-01-01T00:00:00Z) (running)",
+		"group1.task1 (started 2026-01-01T00:00:00Z) (success)",
+		"group1.task1 (started 2026-01-01T00:00:00Z) (success)",
+		"group1.task1 (started 2026-01-01T00:00:00Z) (failed err1)",
+		"group1.task1 (started 2026-01-01T00:00:00Z) (failed err1)",
+		"group1.task1 (started 2026-01-01T00:00:00Z) (failed err2)",
+		"group1.task1 (started 2026-01-01T00:00:01Z) (running)",
+		"group1.task2 (started 2026-01-01T00:00:00Z) (running)",
+		"group2.task1 (started 2026-01-01T00:00:00Z) (running)",
+		"group2.task1 (started 2026-01-01T00:00:00Z) (running)",
+	}
+
+	for i, task := range tasks {
+		r.Equal(expected[i], task.String(), "at index %d", i)
+	}
+}
+
+func TestTaskGroupMarshalJSONStability(t *testing.T) {
+	r := require.New(t)
+
+	setup := func() *TaskGroup {
+		parent := &TaskGroup{Name: "parent"}
+		for i := 0; i < 50; i++ {
+			child := &TaskGroup{Name: fmt.Sprintf("child-%02d", i), Parent: parent}
+			parent.children.Store(child, struct{}{})
+
+			info := &TaskInfo{
+				Group:    parent,
+				TaskName: fmt.Sprintf("task-%02d", i),
+			}
+			parent.tasks.Store(info, struct{}{})
+		}
+		return parent
+	}
+
+	data1, err := json.Marshal(setup())
 	r.NoError(err)
 
-	var m map[string]any
-	r.NoError(json.Unmarshal(data, &m))
-	r.Equal("parent", m["name"])
+	data2, err := json.Marshal(setup())
+	r.NoError(err)
 
-	children := m["children"].([]any)
-	r.Len(children, 1)
-	r.Equal("child", children[0].(map[string]any)["name"])
-
-	tasks := m["tasks"].([]any)
-	r.Len(tasks, 1)
-	r.Equal("task", tasks[0].(map[string]any)["taskName"])
+	r.Equal(string(data1), string(data2), "JSON output should be stable")
 }
 
 func TestTaskGroupString(t *testing.T) {
@@ -400,4 +460,35 @@ func TestTaskInfoFromDefaults(t *testing.T) {
 
 	s.Stop()
 	r.NoError(s.Wait())
+}
+
+func TestTaskTree(t *testing.T) {
+	r := require.New(t)
+	started := time.Date(2026, 2, 23, 12, 0, 0, 0, time.UTC)
+
+	root := &TaskGroup{Name: "root"}
+	child1 := &TaskGroup{Name: "child1", Parent: root}
+	child2 := &TaskGroup{Name: "child2", Parent: root}
+	root.children.Store(child1, struct{}{})
+	root.children.Store(child2, struct{}{})
+
+	task1 := &TaskInfo{
+		Group:    root,
+		Started:  started,
+		TaskName: "task1",
+	}
+	root.tasks.Store(task1, struct{}{})
+
+	task2 := &TaskInfo{
+		Group:    child1,
+		Started:  started,
+		TaskName: "task2",
+	}
+	child1.tasks.Store(task2, struct{}{})
+
+	var sb strings.Builder
+	TaskTree(root, &sb)
+	actual := sb.String()
+
+	r.Equal(taskTreeGolden, actual)
 }

@@ -134,6 +134,10 @@
 // group, child groups (via [TaskGroup.Children]), and currently active
 // tasks (via [TaskGroup.Tasks]).
 //
+// [TaskTree] writes a human-readable representation of a [TaskGroup]
+// hierarchy and its active tasks to an [io.Writer]. The output is
+// stable and suitable for logging or debug endpoints.
+//
 // For every task execution, a [TaskInfo] is created and can be
 // retrieved via [TaskInfoFrom]. It provides metadata about the task,
 // including its name, start time, and its containing [TaskGroup]. It
