@@ -1,16 +1,28 @@
 // Copyright 2026 Bob Vawter (bob@vawter.org)
 // SPDX-License-Identifier: Apache-2.0
 
-// Package stopper brings structured concurrency and graceful lifecycle
-// management to long-running tasks in a Go program.
+// Package stopper provides structured, observable concurrency for Go.
 //
-// A stopper [Context] extends the standard library [context.Context]
-// with a two-phase shutdown model:
+// It extends the standard library [context.Context] with a hierarchical task
+// model and two-phase graceful shutdown, providing deep runtime visibility
+// into an application's task tree.
 //
-//  1. Soft stop – the [Context.Stopping] channel closes, signaling
-//     tasks to begin draining. New tasks are rejected with [ErrStopped].
-//  2. Hard stop – after a configurable grace period the underlying
-//     context is canceled, closing [Context.Done].
+//  1. Structured Concurrency – Tasks are organized into a clear hierarchy;
+//     stopping a parent context automatically stops its children, and
+//     [Context.Wait] blocks until the entire tree has finished.
+//  2. Observable Runtime – Every task and context is automatically tracked.
+//     Inspect the live task tree via [TaskTree], access metadata like
+//     task names and durations with [TaskInfo], or leverage built-in
+//     [runtime/trace] integration.
+//  3. Graceful Shutdown – A [Context] supports a two-phase shutdown model:
+//     a soft stop signals tasks to begin draining, followed by a hard cancel
+//     after a configurable grace period.
+//
+// # Structured Concurrency
+//
+// Contexts created with [WithContext] form a hierarchy: stopping a
+// parent automatically stops its children, while [Context.Len] and
+// [Context.Wait] account for tasks across the entire tree.
 //
 // # Creating a stopper
 //
@@ -86,12 +98,6 @@
 // configurable exponential backoff with jitter and [retry.Loop] for
 // simple synchronous retries.
 //
-// # Nested contexts
-//
-// Contexts created with [WithContext] form a hierarchy: stopping a
-// parent automatically stops its children, while [Context.Len] and
-// [Context.Wait] account for tasks across the entire tree.
-//
 // # OS signal integration
 //
 // [StopOnReceive] triggers a graceful shutdown when a value arrives on
@@ -138,6 +144,20 @@
 // hierarchy and its active tasks to an [io.Writer]. The output is
 // stable and suitable for logging or debug endpoints.
 //
+//	ctx := stopper.New(stopper.WithName("api-server"))
+//	_ = stopper.Go(ctx, task1, stopper.TaskName("request-handler"))
+//	_ = stopper.Go(ctx, task2, stopper.TaskName("background-sync"))
+//
+//	if g, ok := stopper.TaskGroupFrom(ctx); ok {
+//	    stopper.TaskTree(g, os.Stdout)
+//	}
+//
+// Example output:
+//
+//	api-server
+//	├── api-server.request-handler (started 2026-04-08T21:53:00Z) (running)
+//	└── api-server.background-sync (started 2026-04-08T21:53:00Z) (running)
+//
 // For every task execution, a [TaskInfo] is created and can be
 // retrieved via [TaskInfoFrom]. It provides metadata about the task,
 // including its name, start time, and its containing [TaskGroup]. It
@@ -169,4 +189,9 @@
 //
 // The [linger] sub-package provides helpers to detect tasks that fail
 // to exit promptly during tests.
+//
+// # Competitive analysis
+//
+// See doc/analysis.md in the source repository for a detailed comparison
+// of stopper against other Go concurrency libraries like errgroup and conc.
 package stopper

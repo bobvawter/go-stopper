@@ -1,6 +1,6 @@
 # Changelog
 
-## v2.0.0-alpha.next
+## v2.0.0-rc.1
   * `TaskTree` produces stable, human-readable representations of the task hierarchy.
   * `TaskInfo` is now visible to Middleware setup phase.
   * `TaskGroup` allows the stopper hierarchy to be inspected.
