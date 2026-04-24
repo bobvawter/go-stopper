@@ -4,6 +4,7 @@
 package retry
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -86,17 +87,22 @@ func TestContextDone(t *testing.T) {
 		// Return a channel that will never fire.
 		return make(chan struct{}), nil
 	}
+	testCtx := tctx.Context(t)
+	toCancel, cancel := context.WithCancel(testCtx)
+	t.Cleanup(cancel)
 
-	ctx := stopper.WithContext(tctx.Context(t),
+	ctx := stopper.WithContext(toCancel,
 		stopper.WithTaskOptions(stopper.TaskMiddleware(Middleware(classifier))),
 		stopper.WithGracePeriod(time.Millisecond),
 	)
 
+	taskErr := errors.New("task error")
 	err := ctx.Call(func(ctx stopper.Context) error {
-		ctx.Stop()
-		return errors.New("task error")
+		cancel()
+		return taskErr
 	})
-	r.Error(err)
+	r.ErrorIs(err, ctx.Err())
+	r.ErrorIs(err, taskErr)
 }
 
 // TestRetrySuccess verifies that the task is retried when the

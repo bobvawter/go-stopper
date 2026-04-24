@@ -31,7 +31,9 @@ import (
 //
 // If the [stopper.Context.Stopping] channel is closed while waiting for
 // the retry signal, the task will be failed with the previously
-// examined error joined with [stopper.ErrStopped].
+// examined error joined with [stopper.ErrStopped]. Similarly, if
+// [stopper.Context.Done] is closed, the previously examined error will
+// be joined with [stopper.Context.Err].
 //
 // If the returned channel and error are both nil, the error will be
 // considered to have been handled by the Classifier function and the
@@ -80,6 +82,6 @@ func waitOnChannel[N any](ctx stopper.Context, next <-chan N, err error) error {
 	case <-ctx.Stopping():
 		return errors.Join(err, stopper.ErrStopped)
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(err, ctx.Err())
 	}
 }
