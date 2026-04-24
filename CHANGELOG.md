@@ -1,5 +1,8 @@
 # Changelog
 
+## v2.0.0
+  * `retry.Middleware` joins the examined error with `Context.Err()` if the context is canceled while waiting.
+
 ## v2.0.0-rc.1
   * `TaskTree` produces stable, human-readable representations of the task hierarchy.
   * `TaskInfo` is now visible to Middleware setup phase.
