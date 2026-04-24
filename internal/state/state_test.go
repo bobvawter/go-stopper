@@ -418,3 +418,27 @@ func TestStopGracePeriodShortening(t *testing.T) {
 		r.Fail("Should have stopped after 50ms")
 	}
 }
+
+func TestUnwindParentOnChildStopBeforeApply(t *testing.T) {
+	r := require.New(t)
+	accepted := make(chan bool, 1)
+	parent := New(func(error) {}, nil, nil)
+	child := New(func(error) {}, nil, parent)
+
+	// Hold RLock to prevent the call from child.Apply from reaching its
+	// critical section.
+	child.mu.RLock()
+	// This should chain to the parent and then block.
+	go func() {
+		accepted <- child.Apply(1)
+	}()
+	// Spin until parent shows the task.
+	for parent.Len() != 1 {
+		time.Sleep(time.Millisecond)
+	}
+	// Place the child into stopping state.
+	child.softStopLocked(time.Hour)
+	child.mu.RUnlock()
+	r.False(<-accepted)
+	r.Equal(0, parent.Len())
+}
